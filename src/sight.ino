@@ -97,9 +97,6 @@ TODO:
 #include <SHA256.h>
 #include "LittleFS.h"
 #include <FastLED.h>
-#ifdef RGBW
-#include "FastLED_RGBW.h"
-#endif
 #include "hardware/watchdog.h"
 
 // Figure MCU type/serial
@@ -111,6 +108,7 @@ char MCUid [41];
 //
 // We cannot dynamically change this without crashing... :-(
 #ifdef RGBW
+#include "FastLED_RGBW.h"
 CRGBW leds[NUM_STRIPS_DEFAULT+1][NUM_LEDS_PER_STRIP_MAX];
 #else
 CRGB leds[NUM_STRIPS_DEFAULT+1][NUM_LEDS_PER_STRIP_MAX];
