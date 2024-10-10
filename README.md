@@ -1,4 +1,4 @@
-# SIGHT
+# S.I.G.H.T
 **S**helf **I**ndicators for **G**uided **H**andling **T**asks 
 
 
