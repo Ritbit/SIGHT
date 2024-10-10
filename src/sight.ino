@@ -4,15 +4,16 @@ Version : 1.5
 Date    : 2024-09-23
 Author  : Bas van Ritbergen <bas.vanritbergen@adyen.com> / <bas@ritbit.com>
 
-Note    : 
-
-Version Description :
-
+NOTE :
+  
+The RGB/RGBW switch does not work properly yet since I made the RGB/RGBW option selectable in the config.
+Need to find a fix for this, in the mean time only RGB leds are supported !	
 
 TODO:  
   Adding led-animations instead of patterns
 
 */
+
 
 // Basic defaults 
 #define CONFIG_IDENTIFIER "SIGHT-CONFIG"
@@ -97,7 +98,7 @@ TODO:
 #include "LittleFS.h"
 #include <FastLED.h>
 #ifdef RGBW
-  #include "FastLED_RGBW.h"
+#include "FastLED_RGBW.h"
 #endif
 #include "hardware/watchdog.h"
 
@@ -106,7 +107,8 @@ TODO:
 char MCUid [41];
 
 // Declare LedStrip control arrays
-//CRGB leds[NUM_STRIPS_DEFAULT+1][NUM_LEDS_PER_STRIP_DEFAULT];
+// PLEASE READ THE NOTE ABOUT RGBW LEDS IN THE HEADER!!!!
+//
 // We cannot dynamically change this without crashing... :-(
 #ifdef RGBW
 CRGBW leds[NUM_STRIPS_DEFAULT+1][NUM_LEDS_PER_STRIP_MAX];
@@ -171,10 +173,10 @@ void setup() {
   Serial.begin(115200);
   //Serial.setTimeout(0);
 
-  // Initialize status led, set to blue to show we are waiting for input
+  // Initialize status led, set to pusing RED to show we are waiting for input
   //
-  // We have to disable theCPU led as Fastled can only drive 8 led outputs ! (due to 8 PIO registers)
-  // So we have to bitbang if we want to use it...
+  // Due to having only 8 PIO registers on an RP20204 Fastled can only drive 8 led outputs.
+  // As a result we have to control the the CPULED via old-fashioned bitbanging if we want to use it.
   pinMode(CPULED_GPIO, OUTPUT); 
   gpio_put(CPULED_GPIO, 0);
   CPULED(0x00,0x00,0x00);
@@ -186,7 +188,7 @@ void setup() {
 
   while (!Serial) {
     // wait for serial port to connect.
-    // Run a slow GPIO pintest while wating
+    // Run a slow sequential GPIO pintest over GPIO GPIO_PIN_MIN -> GPIO_PIN_MIN+8 while waiting
     // Flash the status led green to indicate we are ready to start.
 
     for (int PIN=0; PIN<NUM_STRIPS_MAX; PIN++){
@@ -213,7 +215,6 @@ void setup() {
   // Also show some details about the MCU and the codeversion
   
   // Show version
-  // Serial.print("\x1b[2J\x1b[H"); // Clear screen, cursor home
   Serial.println();
   Serial.print("-=[ Shelf Indicators for Guided Handling Tasks ]=-\n" );
   Serial.println();
@@ -265,9 +266,7 @@ void setup() {
   }
 
   int MAX_LEDS=0;
-
   MAX_LEDS=(LedConfig.useRGBWleds)?LedConfig.numLedsPerStrip:LedConfig.numLedsPerStrip*(4/3)+1;
-  // MAX_LEDS=(LedConfig.useRGBWleds)?NUM_LEDS_PER_STRIP_MAX:NUM_LEDS_PER_STRIP_MAX*(4/3)+1;
 
   for (uint8_t STRIP=0; STRIP<NUM_STRIPS_DEFAULT ; STRIP++) {
     pinMode(LedConfig.stripGPIOpin[STRIP], OUTPUT);
@@ -917,6 +916,7 @@ void SetConfigParameters(char *Data){
         setLedStateColor(Value);
         break;
       //Set RGB/RGBW leds 
+      // PLEASE READ THE NOTE ABOUT RGBW LEDS IN THE HEADER!!!!
       case '4':
         Serial.println();
         if (*Value == 'N' or *Value == 'n' or *Value == 'F' or *Value == 'f') {
