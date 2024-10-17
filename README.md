@@ -4,7 +4,8 @@
 
 This 8-Channel LED Strip Controller is designed for use in warehouse order picking or as shelf position indicators. By connecting to your system via USB, it identifies as a serial port, allowing for straightforward interaction and control.
 The main setup is based on an RP2040 microcontroller from Waveshare, but it will work find on any RP2040 MCU.
-The model used in my PCB is this one: (https://www.waveshare.com/wiki/RP2040-Zero)[https://www.waveshare.com/wiki/RP2040-Zero]
+
+The model used in my PCB is this one: [https://www.waveshare.com/wiki/RP2040-Zero](https://www.waveshare.com/wiki/RP2040-Zero)
 
 
 Upon connection, the controller will undergo a startup sequence. When the serial port is inactive (no open), the onboard LED will pulse red slowly, and all eight outputs will sequentially pulse every 200 ms with a 1-second interval for testing purposes. Once the seial por tis opened, a welcome animation will play on all LED strips, followed by loading configuration settings from flash memory if available.
