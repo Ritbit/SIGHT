@@ -6,7 +6,10 @@ This 8-Channel LED Strip Controller is designed for use in warehouse order picki
 The main setup is based on an RP2040 microcontroller from Waveshare, but it will work find on any RP2040 MCU.
 
 The model used in my PCB is this one: [https://www.waveshare.com/wiki/RP2040-Zero](https://www.waveshare.com/wiki/RP2040-Zero)
+But it works just s fine on the much cheaper clones from AliExpress: [https://nl.aliexpress.com/w/wholesale-RP2040%2525252dZero.html](https://nl.aliexpress.com/w/wholesale-RP2040%2525252dZero.html)
 
+It can drive all WS28xx based ledstrips although I recoment the 5v based WS-2813 (for the redundant data) or the 12V WS-2815 (for longer lengths, over 1.5mtr)
+The controller and driver board are both suitable for 5v and 12v strips.
 
 Upon connection, the controller will undergo a startup sequence. When the serial port is inactive (no open), the onboard LED will pulse red slowly, and all eight outputs will sequentially pulse every 200 ms with a 1-second interval for testing purposes. Once the seial por tis opened, a welcome animation will play on all LED strips, followed by loading configuration settings from flash memory if available.
 
