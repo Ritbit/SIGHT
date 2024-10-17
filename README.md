@@ -11,7 +11,7 @@ But it works just s fine on the much cheaper clones from AliExpress: [https://nl
 It can drive all WS28xx based ledstrips although I recoment the 5v based WS-2813 (for the redundant data) or the 12V WS-2815 (for longer lengths, over 1.5mtr)
 The controller and driver board are both suitable for 5v and 12v strips.
 
-Upon connection, the controller will undergo a startup sequence. When the serial port is inactive (no open), the onboard LED will pulse red slowly, and all eight outputs will sequentially pulse every 200 ms with a 1-second interval for testing purposes. Once the seial por tis opened, a welcome animation will play on all LED strips, followed by loading configuration settings from flash memory if available.
+Upon connection, the controller will undergo a startup sequence. When the serial port is inactive (not opened in any application), the onboard LED will pulse red slowly, and all eight outputs will sequentially pulse every 200 ms with a 1-second interval for testing purposes. Once the serial port is opened, a welcome animation will play on all LED strips, followed by loading configuration settings from flash memory if available.
 
 The startup sequence output will look as follows:
 
