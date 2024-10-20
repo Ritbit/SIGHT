@@ -1,23 +1,22 @@
 /*
-Name    : SIGHT  (Shelf Indicators for Guided Handling Tasks)
-Version : 1.5
-Date    : 2024-09-23
-Author  : Bas van Ritbergen <bas.vanritbergen@adyen.com> / <bas@ritbit.com>
+Name    : SIGHT (Shelf Indicators for Guided Handling Tasks)
+Version : 1.6
+Date    : 2024-10-01
+Author  : Bas van Ritbergen <bas.vanritbergen@adyen.com> / bas@ritbit.com
 
-NOTE :
-  
-The RGB/RGBW switch does not work properly yet since I made the RGB/RGBW option selectable in the config.
-Need to find a fix for this, in the mean time only RGB leds are supported !	
+Note    :
 
-TODO:  
-  Adding led-animations instead of patterns
+Version Descrption :
+  * Replaced patterns with animations.
 
+TODO:
+      The RGB/RGBW switch does not work properly yet since I made the RGB/RGBW option selectable in the config.
+      Need to find a fix for this, in the mean time only RGB leds are supported !
 */
 
-
-// Basic defaults 
+// Basic defaults
 #define CONFIG_IDENTIFIER "SIGHT-CONFIG"
-#define IDENTIFIER_DEFAULT "SIGHT-1.5"
+#define IDENTIFIER_DEFAULT "SIGHT-1.6"
 #define NUM_LEDS_PER_STRIP_DEFAULT 57
 #define NUM_LEDS_PER_STRIP_MIN 6
 #define NUM_LEDS_PER_STRIP_MAX 144
@@ -25,8 +24,8 @@ TODO:
 #define NUM_STRIPS_DEFAULT 8
 #define NUM_STRIPS_MAX 8
 
-#define NUM_POSITIONS_PER_STRIP_DEFAULT 6
-#define NUM_POSITIONS_PER_STRIP_MAX 16
+#define NUM_GROUPS_PER_STRIP_DEFAULT 6
+#define NUM_GROUPS_PER_STRIP_MAX 16
 
 #define SPACER_WIDTH_DEFAULT 1
 #define SPACER_WIDTH_MAX 20
@@ -34,15 +33,19 @@ TODO:
 #define START_OFFSET 1
 #define START_OFFSET_MAX 9
 
-#define MAX_PositionS 48
+#define MAX_TERMINALS 48
 
 #define BLINK_INTERVAL 200
 #define BLINK_INTERVAL_MIN 100
 #define BLINK_INTERVAL_MAX 3000
 
-#define SET_POSITIONSTATE_INTERVAL 200
-#define SET_POSITIONSTATE_INTERVAL_MIN 50
-#define SET_POSITIONSTATE_INTERVAL_MAX 1000
+#define ANIMATE_INTERVAL 125
+#define ANIMATE_INTERVAL_MIN 10
+#define ANIMATE_INTERVAL_MAX 1000
+
+#define SET_GROUPSTATE_INTERVAL 200
+#define SET_GROUPSTATE_INTERVAL_MIN 50
+#define SET_GROUPSTATE_INTERVAL_MAX 1000
 
 #define UPDATE_INTERVAL 10
 #define UPDATE_INTERVAL_MIN 5
@@ -79,16 +82,11 @@ TODO:
 // No configurable items below
 
 // This Version
-#define VERSION "1.5"
+#define VERSION "1.6"
 
 // Define max length for Input/Ouput buffers:
-#define MAX_INPUT_LEN MAX_PositionS+4
+#define MAX_INPUT_LEN MAX_TERMINALS+4
 #define MAX_OUTPUT_LEN 60
-
-// Reserve space for LittleFS disk 2MB
-#ifndef PICO_FLASH_SIZE_BYTES
-#define PICO_FLASH_SIZE_BYTES (2 * 1024 * 1024)
-#endif
 
 // We definitely need these libraries
 #include <Arduino.h>
@@ -97,6 +95,9 @@ TODO:
 #include <SHA256.h>
 #include "LittleFS.h"
 #include <FastLED.h>
+#ifdef RGBW
+  #include "FastLED_RGBW.h"
+#endif
 #include "hardware/watchdog.h"
 
 // Figure MCU type/serial
@@ -104,11 +105,9 @@ TODO:
 char MCUid [41];
 
 // Declare LedStrip control arrays
-// PLEASE READ THE NOTE ABOUT RGBW LEDS IN THE HEADER!!!!
-//
+//CRGB leds[NUM_STRIPS_DEFAULT+1][NUM_LEDS_PER_STRIP_DEFAULT];
 // We cannot dynamically change this without crashing... :-(
 #ifdef RGBW
-#include "FastLED_RGBW.h"
 CRGBW leds[NUM_STRIPS_DEFAULT+1][NUM_LEDS_PER_STRIP_MAX];
 #else
 CRGB leds[NUM_STRIPS_DEFAULT+1][NUM_LEDS_PER_STRIP_MAX];
@@ -120,11 +119,13 @@ struct LedData {
   char identifier[16] = IDENTIFIER_DEFAULT;
   uint16_t numLedsPerStrip = NUM_LEDS_PER_STRIP_DEFAULT;
   uint8_t  numStrips = NUM_STRIPS_DEFAULT;
-  uint8_t  numPositionsPerStrip = NUM_POSITIONS_PER_STRIP_DEFAULT;
+  uint8_t  numGroupsPerStrip = NUM_GROUPS_PER_STRIP_DEFAULT;
   uint8_t  spacerWidth = SPACER_WIDTH_DEFAULT;
   uint8_t  startOffset = START_OFFSET;
   uint16_t blinkinterval = BLINK_INTERVAL;
+  uint16_t animateinterval = ANIMATE_INTERVAL;
   uint16_t updateinterval = UPDATE_INTERVAL;
+  uint16_t brightness = BRIGHTNESS;
   bool     altShelfOrder = ALTERNATIVE_SHELFORDERING;
   bool     useRGBWleds = RGBW_LEDS;
   uint8_t  stripGPIOpin[8] = {2,3,4,5,6,7,8,9};
@@ -139,8 +140,8 @@ uint8_t bufferIndex = 0;
 
 
 // For color/blinking-state feature we need some extra global parameters
-uint8_t  PosState[MAX_PositionS] = {0};
-uint8_t  PosPct[MAX_PositionS] = {0};
+uint8_t  TermState[MAX_TERMINALS] = {0};
+uint8_t  TermPct[MAX_TERMINALS] = {0};
 volatile bool blinkState = 0;
 uint32_t lastToggleTimes=0;
 
@@ -153,14 +154,14 @@ uint32_t lastStateUpdate;
 
 // Flags for updates
 volatile bool LedstripUpdate = false;
-volatile bool SetPositionStateFlag = false;
+volatile bool SetGroupStateFlag = false;
 
 // Timer objects for pico_sdk
 Ticker update_Timer;
 Ticker blink_Timer;
-Ticker setposition_Timer;
-
-uint8_t animatestep[10]={0,0,0,0,0,0,0,0,0,0};
+Ticker setgroup_Timer;
+Ticker animate_Timer;
+uint8_t animate_Step[10]={0,0,0,0,0,0,0,0,0,0};
 
 // ##########################################################################################################
 
@@ -171,11 +172,11 @@ void setup() {
   Serial.begin(115200);
   //Serial.setTimeout(0);
 
-  // Initialize status led, set to pusing RED to show we are waiting for input
+  // Initialize status led, set to blue to show we are waiting for input
   //
-  // Due to having only 8 PIO registers on an RP20204 Fastled can only drive 8 led outputs.
-  // As a result we have to control the the CPULED via old-fashioned bitbanging if we want to use it.
-  pinMode(CPULED_GPIO, OUTPUT); 
+  // We have to disable theCPU led as Fastled can only drive 8 led outputs ! (due to 8 PIO registers)
+  // So we have to bitbang if we want to use it...
+  pinMode(CPULED_GPIO, OUTPUT);
   gpio_put(CPULED_GPIO, 0);
   CPULED(0x00,0x00,0x00);
 
@@ -186,19 +187,19 @@ void setup() {
 
   while (!Serial) {
     // wait for serial port to connect.
-    // Run a slow sequential GPIO pintest over GPIO GPIO_PIN_MIN -> GPIO_PIN_MIN+8 while waiting
+    // Run a slow GPIO pintest while wating
     // Flash the status led green to indicate we are ready to start.
 
     for (int PIN=0; PIN<NUM_STRIPS_MAX; PIN++){
-      CPULED(0x00,PIN*0x10,0x00); 
-      
+      CPULED(0x00,PIN*0x10,0x00);
+
       digitalWrite(PIN+GPIO_PIN_MIN, HIGH);
       delay(100);
       digitalWrite(PIN+GPIO_PIN_MIN, LOW);
     }
     delay(100);
     CPULED(0x00,0x00,0x00);
-    delay(100);    
+    delay(100);
   }
 
   // Set status led to blue to show we are busy
@@ -209,20 +210,24 @@ void setup() {
     digitalWrite(PIN, LOW);
   }
 
+  // Set status led to blue to show we are busy
+  CPULED(0x00,0x00,0x00);
+  CPULED(0x00,0x00,0x80);
   // Show welcome to let us know the controller is booting.
   // Also show some details about the MCU and the codeversion
-  
+
   // Show version
+  // Serial.print("\x1b[2J\x1b[H"); // Clear screen, cursor home
   Serial.println();
   Serial.print("-=[ Shelf Indicators for Guided Handling Tasks ]=-\n" );
   Serial.println();
   Serial.print("SIGHT Version  : " );
-  Serial.println(VERSION);  // Why does this add a 0 to the string ?? 
+  Serial.println(VERSION);  // Why does this add a 0 to the string ??
 
   // Boardname
   Serial.print("MicroController : " );
   Serial.println(BOARD_NAME);
- 
+
   // CPU id
   // Note: often the MCU hangs/crashes on this... why ?
   Serial.print("MCU-Serial      : " );
@@ -235,7 +240,7 @@ void setup() {
   Serial.println();
 
   // Initialize LittleFS if available
-  if (!LittleFS.begin()){  
+  if (!LittleFS.begin()){
     Serial.println("LittleFS mount failed!");
 
     // Attempt to format the filesystem
@@ -259,12 +264,14 @@ void setup() {
   } else {
     Serial.println("LittleFS mounted successfully.");
     // Load or set defaults
-    if (loadConfiguration() == false) 
+    if (loadConfiguration() == false)
       resetToDefaults();
   }
 
   int MAX_LEDS=0;
+
   MAX_LEDS=(LedConfig.useRGBWleds)?LedConfig.numLedsPerStrip:LedConfig.numLedsPerStrip*(4/3)+1;
+  // MAX_LEDS=(LedConfig.useRGBWleds)?NUM_LEDS_PER_STRIP_MAX:NUM_LEDS_PER_STRIP_MAX*(4/3)+1;
 
   for (uint8_t STRIP=0; STRIP<NUM_STRIPS_DEFAULT ; STRIP++) {
     pinMode(LedConfig.stripGPIOpin[STRIP], OUTPUT);
@@ -293,9 +300,9 @@ void setup() {
         case 20: FastLED.addLeds<WS2812B, 20, GRB>(leds[STRIP], MAX_LEDS); break; // Not on header pins
         case 21: FastLED.addLeds<WS2812B, 21, GRB>(leds[STRIP], MAX_LEDS); break; // Not on header pins
         case 22: FastLED.addLeds<WS2812B, 22, GRB>(leds[STRIP], MAX_LEDS); break; // Not on header pins
-        case 23: FastLED.addLeds<WS2812B, 23, GRB>(leds[STRIP], MAX_LEDS); break; // Not on header pins  
-        case 24: FastLED.addLeds<WS2812B, 24, GRB>(leds[STRIP], MAX_LEDS); break; // Not on header pins  
-        case 25: FastLED.addLeds<WS2812B, 25, GRB>(leds[STRIP], MAX_LEDS); break; // Not on header pins  
+        case 23: FastLED.addLeds<WS2812B, 23, GRB>(leds[STRIP], MAX_LEDS); break; // Not on header pins
+        case 24: FastLED.addLeds<WS2812B, 24, GRB>(leds[STRIP], MAX_LEDS); break; // Not on header pins
+        case 25: FastLED.addLeds<WS2812B, 25, GRB>(leds[STRIP], MAX_LEDS); break; // Not on header pins
         case 26: FastLED.addLeds<WS2812B, 26, GRB>(leds[STRIP], MAX_LEDS); break;
         case 27: FastLED.addLeds<WS2812B, 27, GRB>(leds[STRIP], MAX_LEDS); break;
         case 28: FastLED.addLeds<WS2812B, 28, GRB>(leds[STRIP], MAX_LEDS); break;
@@ -305,13 +312,14 @@ void setup() {
    	FastLED.setBrightness(BRIGHTNESS);
   }
 
- 
+
   StartupLoop();
 
   // start timers for updating leds (x1000 so we set mSec)
-  update_Timer.attach_ms(LedConfig.updateinterval,&WriteLedstripData); 
-  blink_Timer.attach_ms(LedConfig.blinkinterval, &SetblinkState); 
-  setposition_Timer.attach_ms(LedConfig.updateinterval*2,&SetPositionState); 
+  update_Timer.attach_ms(LedConfig.updateinterval,&WriteLedstripData);
+  blink_Timer.attach_ms(LedConfig.blinkinterval, &SetblinkState);
+  animate_Timer.attach_ms(LedConfig.animateinterval, &AnimateStep);
+  setgroup_Timer.attach_ms(LedConfig.updateinterval*2,&SetGroupState);
 
   // Show help & config:
   // ShowHelp();
@@ -323,7 +331,6 @@ void setup() {
   // Ready to go, show prompt to show we are ready for input
   Serial.print("> ");
 }
- 
 
 void WriteLedstripData(){
   LedstripUpdate = true;
@@ -332,12 +339,20 @@ void WriteLedstripData(){
 
 void SetblinkState(){
   blinkState = !blinkState;
-  (blinkState == true)?CPULED(0x40,0x00,0x00):CPULED(0x00,0x00,0x00); 
+  (blinkState == true)?CPULED(0x40,0x00,0x00):CPULED(0x00,0x00,0x00);
   return;
 }
 
-void SetPositionState(){
-  SetPositionStateFlag = true;
+void AnimateStep(){
+  // just count up here, the clipping happens in the UpdateLED function as the lenght varies on the effect and group-size.
+  for (int i=0; i<10; i++){
+    animate_Step[i]++;
+  }
+  return;
+}
+
+void SetGroupState(){
+  SetGroupStateFlag = true;
   return;
 }
 
@@ -350,19 +365,16 @@ void loop() {
   }
 
   //updateLEDs();
-  if (SetPositionStateFlag) {
+  if (SetGroupStateFlag) {
      FastLED.show();
-     SetPositionStateFlag=false;
+     SetGroupStateFlag=false;
   }
 
   if (LedstripUpdate) {
     LedstripUpdate=false;
-    updatePositions();
+    updateGroups();
   }
-
 }
-
-
 
 // Handle serial input efficiently
 void handleSerialInput() {
@@ -372,10 +384,10 @@ void handleSerialInput() {
 
     if (c == '\e' || c == 0x03 ) {
       Serial.println("\nCANCELLED");
-      bufferIndex = 0;  
+      bufferIndex = 0;
       Serial.print("> ");
-    } 
-    else 
+    }
+    else
     if (c == '\n' || c == '\r') {
       inputBuffer[bufferIndex] = '\0'; // Null-terminate the string
       Serial.println();
@@ -383,14 +395,14 @@ void handleSerialInput() {
       Serial.print("> ");
       bufferIndex = 0;
     }
-    else 
+    else
     if (c == 0x08 && bufferIndex > 0) { // Backspace
       bufferIndex--;
-      Serial.print(c);  
-      Serial.print(' ');  
-      Serial.print(c);  
+      Serial.print(c);
+      Serial.print(' ');
+      Serial.print(c);
     }
-    else 
+    else
     if (bufferIndex < MAX_INPUT_LEN - 1 && isPrintable(c)) {
       inputBuffer[bufferIndex++] = c;
       Serial.print(c);
@@ -415,10 +427,10 @@ void checkInput(char input[MAX_INPUT_LEN]) {
   int test=0;
   int State;
   int Pct;
-  int PositionID;
+  int TermID;
   int Strip;
   char Command = input[0];
-  char *Data = input +1; 
+  char *Data = input +1;
 
   if (Command >= 'A' && Command <= 'Z') {
     switch(Command) {
@@ -447,69 +459,69 @@ void checkInput(char input[MAX_INPUT_LEN]) {
         loadConfiguration();
         break;
 
-      // Set Position state 
+      // Set Terminal state
       case 'T':
-        test = sscanf(Data, "%2d:%d", &PositionID, &State);
+        test = sscanf(Data, "%2d:%d", &TermID, &State);
         if ( test == 2) {
-          if (PositionID >= 1 && PositionID <= MAX_PositionS) {
+          if (TermID >= 1 && TermID <= MAX_TERMINALS) {
             if (State >= 0 && State <= 9) {
-              // setPositionState(PositionID -1,State,100);
-              PosState[PositionID -1] = State;
-              PosPct[PositionID -1] = 100;
-              sprintf(output,"Position %d state set to %d", PositionID, State);
+              // setGroupState(TermID -1,State,100);
+              TermState[TermID -1] = State;
+              TermPct[TermID -1] = 100;
+              sprintf(output,"Terminal %d state set to %d", TermID, State);
               Serial.println(output);
-            } else 
+            } else
               Serial.print("Invalid state, use 0-9\n" );
           } else
-            Serial.print("Invalid Position-ID, use 1-48\n" );
+            Serial.print("Invalid Terminal-ID, use 1-48\n" );
         } else
-          Serial.print("Syntax error: Use T<Position-ID>:<STATE>\n" );
+          Serial.print("Syntax error: Use T<TERMINAL-ID>:<STATE>\n" );
         break;
-               
-      // Set Position state 
+
+      // Set Terminal state
       case 'P':
-        test = sscanf(Data, "%2d:%d:%3d", &PositionID, &State, &Pct);
+        test = sscanf(Data, "%2d:%d:%3d", &TermID, &State, &Pct);
         //if ( test == 3) {
-          if (PositionID >= 1 && PositionID <= MAX_PositionS) {
+          if (TermID >= 1 && TermID <= MAX_TERMINALS) {
             if (State >= 0 && State <= 9) {
               if (Pct >= 0 && State <= 100) {
-                // setPositionState(PositionID -1, State, uint8_t(Pct));
-                PosState[PositionID -1] = State;
-                PosPct[PositionID -1] = uint8_t(Pct);
-                sprintf(output,"Position %d state set to %d with progress %d ", PositionID, State, Pct);
+                // setGroupState(TermID -1, State, uint8_t(Pct));
+                TermState[TermID -1] = State;
+                TermPct[TermID -1] = uint8_t(Pct);
+                sprintf(output,"Terminal %d state set to %d with progress %d ", TermID, State, Pct);
                 Serial.println(output);
               } else
                 Serial.print("Invalid percentage, use 0-100\n" );
             } else
               Serial.print("Invalid state, use 0-9\n" );
           } else
-            Serial.print("Invalid Position-ID, use 1-48\n" );
+            Serial.print("Invalid Terminal-ID, use 1-48\n" );
         break;
 
-      // Set state for all Positions 
+      // Set state for all Terminals
       case 'A':
         test = sscanf(Data, ":%d", &State);
         if (test == 1) {
           if (State >= 0 && State <= 9) {
-            Serial.print("All Positions set to state " );
+            Serial.print("All terminals set to state " );
             Serial.println(State);
-            for(int PositionID=1; PositionID <= MAX_PositionS; PositionID++){
-              // setPositionState(PositionID,State,100);
-              PosState[PositionID -1 ] = State;
-              PosPct[PositionID -1] = 100;
+            for(int TermID=1; TermID <= MAX_TERMINALS; TermID++){
+              // setGroupState(TermID,State,100);
+              TermState[TermID -1 ] = State;
+              TermPct[TermID -1] = 100;
             }
           } else {
             Serial.print("Invalid state, use 0-9\n" );
           }
-        } else 
+        } else
           Serial.print("Syntax error: Use A:<STATE>\n" );
         break;
 
-      // Get state for all Positions 
+      // Get state for all Terminals
       case 'G':
-            Serial.print("State of all Positions: " );
+            Serial.print("State of all terminals: " );
             Serial.println();
-           
+
             for(int Index=0; Index<LedConfig.numStrips; Index++){
               // for alternative ordering
               if (LedConfig.altShelfOrder == true)
@@ -517,43 +529,43 @@ void checkInput(char input[MAX_INPUT_LEN]) {
                 // else Strip=(input /2)+4;
                 (Index %2 == 0) ? Strip=Index/2 : Strip=(Index/2)+4;
               else
-                Strip = Index; 
+                Strip = Index;
 
               Serial.print("Shelve ");
               Serial.print(Strip +1);
               Serial.print(" : ");
- 
-              for(int pos=0; pos<LedConfig.numPositionsPerStrip; pos++){
-                Serial.print(PosState[(Index*LedConfig.numPositionsPerStrip)+pos]);
+
+              for(int term=0; term<LedConfig.numGroupsPerStrip; term++){
+                Serial.print(TermState[(Index*LedConfig.numGroupsPerStrip)+term]);
                 Serial.print(' ');
               }
 
-              Serial.print(" (Position ");
-              sprintf(output, "%2d",Index*LedConfig.numPositionsPerStrip+1);
+              Serial.print(" (Terminal ");
+              sprintf(output, "%2d",Index*LedConfig.numGroupsPerStrip+1);
               Serial.print(output);
               Serial.print(" - ");
-              sprintf(output, "%2d",Index*LedConfig.numPositionsPerStrip+LedConfig.numPositionsPerStrip);
+              sprintf(output, "%2d",Index*LedConfig.numGroupsPerStrip+LedConfig.numGroupsPerStrip);
               Serial.print(output);
               Serial.println(")");
             }
 
         break;
-      
-      // Set mass state, a digit for each Position (48 max)
+
+      // Set mass state, a digit for each terminal (48 max)
       case 'M':
         char ST;
         Serial.println();
         if ( Data[0] == ':') {
-          int PositionID=1;
-          while ( Data[PositionID] != 0 && PositionID<=MAX_PositionS ) {
-            ST=Data[PositionID];
+          int TermID=1;
+          while ( Data[TermID] != 0 && TermID<=MAX_TERMINALS ) {
+            ST=Data[TermID];
             State = atoi(&ST);
             if (State >= 0 && State <= 9) {
-              PosState[PositionID -1]=State;
-              PosPct[PositionID -1] = 100;
-              // setPositionState(PositionID -1,State,100);
+              TermState[TermID -1]=State;
+              TermPct[TermID -1] = 100;
+              // setGroupState(TermID -1,State,100);
             }
-            PositionID++;
+            TermID++;
           }
         } else
           Serial.print("Syntax error: Use M:<STATE><STATE<<STATE>...\n");
@@ -561,11 +573,11 @@ void checkInput(char input[MAX_INPUT_LEN]) {
 
       // Reset all states to off
       case 'X':
-        Serial.print("Reset all Position states.\n" );
-        for(int PositionID=0; PositionID < MAX_PositionS; PositionID++){
-          // setPositionState(PositionID,0,100);
-          PosState[PositionID -1] = 0;
-          PosPct[PositionID -1] = 100;
+        Serial.print("Reset all Terminal states.\n" );
+        for(int TermID=0; TermID < MAX_TERMINALS; TermID++){
+          // setGroupState(TermID,0,100);
+          TermState[TermID -1] = 0;
+          TermPct[TermID -1] = 100;
         }
         SetAllLEDs(CRGB::Black);
         break;
@@ -604,18 +616,18 @@ void RebootMCU() {
   while (true) {
     delay(10);
   }
- }
+}
 
 void ShowHelp(){
-  Serial.print ("  T<PositionID>:<State>             Set Position state. PositionID: 1-");
-  Serial.print (MAX_PositionS);
+  Serial.print ("  T<TermID>:<State>             Set Terminal state. TermID: 1-");
+  Serial.print (MAX_TERMINALS);
   Serial.println(" and State: 0-9");
-  Serial.println("  P<PositionID>:<State>:<Pct>       Set Position state. PositionID: 1-");
-  Serial.print (MAX_PositionS);
+  Serial.print  ("  P<TermID>:<State>:<Pct>       Set Terminal state. TermID: 1-");
+  Serial.print (MAX_TERMINALS);
   Serial.println(", State: 0-9, PCt=0-100% progress");
-  Serial.println("  M:<State><State>...           Set state for multiple Positions, sequentually listed, e.g: '113110'");
-  Serial.println("  A:<State>                     Set state for all Positions, state (0-9)");
-  Serial.println("  G                             Get states for all Positions");
+  Serial.println("  M:<State><State>...           Set state for multiple Terminals, sequentually listed, e.g: '113110'");
+  Serial.println("  A:<State>                     Set state for all Terminals, state (0-9)");
+  Serial.println("  G                             Get states for all Terminals");
   Serial.println("  X                             Set all states to off (same as sending'A:0'");
   Serial.println();
   Serial.println("  H                             This help");
@@ -623,17 +635,17 @@ void ShowHelp(){
   Serial.println("  W                             Shows welcome/startup loop");
   Serial.println();
   Serial.println("  D                             Show current configuration");
-  Serial.println("  Ci:<string>                   Set Identifier (1-16 chars)");
+  Serial.println("  Cn:<string>                   Set Controller name (ID) (1-16 chars)");
   Serial.print  ("  Cl:<value>                    Set amount of LEDs per shelf (");
   Serial.print  (NUM_LEDS_PER_STRIP_MIN);
   Serial.print  ("-");
   Serial.print (NUM_LEDS_PER_STRIP_MAX);
-  Serial.println(")"); 
-  Serial.print ("  Ct:<value>                    Set amount of Positions per shelf (1-");
-  Serial.print (NUM_POSITIONS_PER_STRIP_MAX);
+  Serial.println(")");
+  Serial.print ("  Ct:<value>                    Set amount of terminals per shelf (1-");
+  Serial.print (NUM_GROUPS_PER_STRIP_MAX);
   Serial.println(")");
   Serial.println("  Cs:<value>                    Set amount of shelves (1-8)");
-  Serial.print ("  Cw:<value>                    Set spacer-width (LEDs between Positions, 0-");
+  Serial.print ("  Cw:<value>                    Set spacer-width (LEDs between terminals, 0-");
   Serial.print  (SPACER_WIDTH_MAX);
   Serial.println(")");
   Serial.print  ("  Co:<value>                    Set starting offset (skipping leds at start of strip, 0-");
@@ -649,11 +661,17 @@ void ShowHelp(){
   Serial.print  ("-");
   Serial.print  (UPDATE_INTERVAL_MAX);
   Serial.println(")");
+  Serial.print  ("  Ca:<value>                    Set animate-interval in msec (");
+  Serial.print  (ANIMATE_INTERVAL_MIN);
+  Serial.print  ("-");
+  Serial.print  (ANIMATE_INTERVAL_MAX);
+  Serial.println(")");
+  Serial.println("  Ci:<value>                    Set brigjtness intensity (0-255)");
   Serial.println("  Cc:<state>:<value>            Set color for state in HEX RGB order (state 1-9, value: RRGGBB)");
   Serial.println("  Cp:<state>:<pattern>          Set display-pattern for state in (state: 0-9, pattern 0-9) [for colorblind assist]");
   Serial.println("  Cz:<yes/true/no/false>        Set Alternative shelf order pattern (False/True)");
   Serial.println("  C4:<yes/true/no/false>        Set RGBW leds (4bytes) instead of RGB (3bytes) (False/True)");
-  Serial.print  ("  Cx:<shelve>:<cpio-pin>       Set CPIO pin (");
+  Serial.print  ("  Cx:<shelve>:<cpio-pin>        Set CPIO pin (");
   Serial.print  (GPIO_PIN_MIN);
   Serial.print  ("-");
   Serial.print  (GPIO_PIN_MAX);
@@ -665,86 +683,178 @@ void ShowHelp(){
   Serial.println("\n");
 }
 
-
-void updatePositions() {
-  // Clean ALL on all strips first (so also the unselected ones)
-  FastLED.clearData();
-
-  // Loop over all positions and adapte state if PositionBlink is true
-  for (int i = 0; i < LedConfig.numPositionsPerStrip * LedConfig.numStrips; i++) {
-
-    // Set leds for each Position(=Position), check blinkstate too
-    if ( LedConfig.state_pattern[PosState[i]]%2 == 1 && blinkState == 0) {
-      SetLEDPostion(i,0,0);
-    } else {
-      SetLEDPostion(i, PosState[i],PosPct[i]);
-    }
+void updateGroups() {
+  // Loop over all groups and adapt state
+  for (int i = 0; i < LedConfig.numGroupsPerStrip * LedConfig.numStrips; i++) {
+      SetLEDGroup(i, TermState[i],TermPct[i]);
   }
 }
- 
-void SetLEDPostion(uint8_t position, uint8_t state, uint8_t pct) {
+
+void SetLEDGroup(uint8_t group, uint8_t state, uint8_t pct) {
 
   uint8_t pattern = LedConfig.state_pattern[state];
-  int stripIndex = floor(position / LedConfig.numPositionsPerStrip);
+  int stripIndex = floor(group / LedConfig.numGroupsPerStrip);
+
+  // Switch odering to left=>right (14263748) instead of up=>down  (12345678)
   if (LedConfig.altShelfOrder == true) {
     (stripIndex %2 == 0) ? stripIndex=stripIndex/2 : stripIndex=(stripIndex/2)+4;
   }
-  int positionIndex = position % LedConfig.numPositionsPerStrip;
-  int startLEDIndex = positionIndex * round(LedConfig.numLedsPerStrip / LedConfig.numPositionsPerStrip) + LedConfig.startOffset ;
-  int PositionWidth = (LedConfig.numLedsPerStrip / LedConfig.numPositionsPerStrip) - LedConfig.spacerWidth;
+
+  int groupIndex = group % LedConfig.numGroupsPerStrip;
+  int startLEDIndex = groupIndex * round(LedConfig.numLedsPerStrip / LedConfig.numGroupsPerStrip) + LedConfig.startOffset ;
+  int GroupWidth = (LedConfig.numLedsPerStrip / LedConfig.numGroupsPerStrip) - LedConfig.spacerWidth;
 
   // for percentage
   if (pct<100) {
-    pattern=pattern%2; // Force pattern 0  or 1
+    pattern=pattern%2; // Force pattern 0 (solid)  or 1 (blinking) when using percentage indication.
     float factor = float(pct)/100;
-    PositionWidth = round(float(PositionWidth) * factor);
-    if (PositionWidth == 0 && pct>0) 
-      PositionWidth=1;  // only no leds on 0%
+    GroupWidth = round(float(GroupWidth) * factor);
+    if (GroupWidth == 0 && pct>0)
+      GroupWidth=1;  // only no leds on 0%
   }
-  // Paterns
-  // 0 solid no blink    [########]
-  // 1 solid blink
-  // 2 odd no blink      [# # # # ]
-  // 3 odd blink
-  // 4 halve no blink    [####    ]
-  // 5 halve blink
-  // 6 break no blink    [###  ###]
-  // 7 break blink
-  // 8 interval no blink [## ## ##]
-  // 9 interval blink
 
-  for(int i=0; i<PositionWidth; i++){
-    switch (pattern) {
-      case 0:
-      case 1:	if (i < PositionWidth)
-                leds[stripIndex][startLEDIndex+i] = LedConfig.state_color[state];;
+  switch (pattern) {
+      case 0: animate_Step[pattern]=animate_Step[pattern]%1;
+              // 0 solid no blink    [########]
+              //                     [########]
+              for(int i=0; i<GroupWidth; i++)
+                leds[stripIndex][startLEDIndex+i] = LedConfig.state_color[state];
               break;
-      case 2:
-      case 3: if (i%2 == 0 ) 
-                leds[stripIndex][startLEDIndex+i] = LedConfig.state_color[state];;
+
+      case 1:	animate_Step[pattern]=animate_Step[pattern]%2;
+              // 1 solid blink       [########]
+              //                     [        ]
+              for(int i=0; i<GroupWidth; i++)
+                  leds[stripIndex][startLEDIndex +i] = LedConfig.state_color[state]*blinkState;
               break;
-      case 4:
-      case 5: if ( i/(PositionWidth/2) == 0 )
-                leds[stripIndex][startLEDIndex+i] = LedConfig.state_color[state];;
-              break;
-      case 6:
-      case 7: if ( i+1 <= PositionWidth/3 || PositionWidth-i <= PositionWidth/3 )
-                leds[stripIndex][startLEDIndex+i] = LedConfig.state_color[state];;
-              break;
-      case 8:
-      case 9: { int left = PositionWidth / 3;
-                int right = PositionWidth / 3;
-                int middle = PositionWidth - (left + right);               
-                if (i < left || i >= (left + middle)) {
-                  leds[stripIndex][startLEDIndex+i] = LedConfig.state_color[state];;
-                } else 
-                if (middle == 1 && i == left) {
-                  leds[stripIndex][startLEDIndex+i] = LedConfig.state_color[state];;
-                }
+
+      case 2: animate_Step[pattern]=animate_Step[pattern]%2;
+              // 2 Alternate L/R     [####    ] Count up c=0->1  s,s+(n/2) *c
+              //                     [    ####]                  (n/2),n   *!c
+              for(int i=0; i<(GroupWidth/2); i++) {
+                  leds[stripIndex][startLEDIndex +i +( blinkState*(GroupWidth/2)) ] = LedConfig.state_color[state];
+                  leds[stripIndex][startLEDIndex +i +(!blinkState*(GroupWidth/2)) ] = 0;
               }
               break;
-    }
-	}
+
+      case 3: animate_Step[pattern]=animate_Step[pattern]%2;
+              // 3 Alternate in/out  [##      ##] Count up c=0->1  s,s+(n/4) + n-(n/4),n
+              //                     [  ##  ##  ]                  s+(n/4)-(n/2)+(n/4)
+              for(int i=0; i<(GroupWidth); i++) {
+                if (i < (GroupWidth/4) or i >= (GroupWidth-(GroupWidth/4)) )
+                  leds[stripIndex][startLEDIndex +i] = LedConfig.state_color[state] * blinkState;
+                else
+                  leds[stripIndex][startLEDIndex +i] = LedConfig.state_color[state] * !blinkState;
+              }
+              break;
+
+      case 4: animate_Step[pattern]=animate_Step[pattern]%GroupWidth;
+              // 4 odd/even          [# # # # ]
+              //                     [ # # # #]
+              for(int i=0; i<(GroupWidth); i++) {
+
+                  if (i%2)
+                    leds[stripIndex][startLEDIndex +i] = LedConfig.state_color[state] * blinkState;
+                  else
+                    leds[stripIndex][startLEDIndex +i] = LedConfig.state_color[state] * !blinkState;
+
+              }
+              break;
+
+      case 5: animate_Step[pattern]=animate_Step[pattern]%(GroupWidth);
+                // 5 Animate >         [#       ]
+                //                     [ #      ]
+                //                     [  #     ]
+                //                     [   #    ]
+                //                     [    #   ]
+                //                     [     #  ]
+                //                     [      # ]
+                //                     [       #]
+              for(int i=0; i<GroupWidth; i++) {
+                leds[stripIndex][startLEDIndex+i].fadeToBlackBy(128);
+              }
+              leds[stripIndex][startLEDIndex + animate_Step[pattern] ] = LedConfig.state_color[state];;
+              break;
+              // if ( i/(GroupWidth/2) == 0 )
+              //   leds[stripIndex][startLEDIndex+i] = LedConfig.state_color[state];;
+              // break;
+
+      case 6: animate_Step[pattern]=animate_Step[pattern]%(GroupWidth);
+              // 6 Animate <         [       #]
+              //                     [      # ]
+              //                     [     #  ]
+              //                     [    #   ]
+              //                     [   #    ]
+              //                     [  #     ]
+              //                     [ #      ]
+              //                     [#       ]
+              for(int i=0; i<GroupWidth; i++) {
+                leds[stripIndex][startLEDIndex+i].fadeToBlackBy(128);
+              }
+              leds[stripIndex][startLEDIndex + GroupWidth - animate_Step[pattern] -1 ] = LedConfig.state_color[state];;
+              break;
+
+      case 7: animate_Step[pattern]=animate_Step[pattern]%((GroupWidth*2));
+              // 7 Cyon/Kitt         [#       ]
+              //                     [ #      ]
+              //                     [  #     ]
+              //                     [   #    ]
+              //                     [    #   ]
+              //                     [     #  ]
+              //                     [      # ]
+              //                     [       #]
+              //                     [      # ]
+              //                     [     #  ]
+              //                     [    #   ]
+              //                     [   #    ]
+              //                     [  #     ]
+              //                     [ #      ]
+              //                     [#       ]
+              for(int i=0; i<GroupWidth; i++) {
+                leds[stripIndex][startLEDIndex+i].fadeToBlackBy(64);
+              }
+              if (animate_Step[pattern] < GroupWidth ) {
+                leds[stripIndex][startLEDIndex + animate_Step[pattern]] = LedConfig.state_color[state];
+                // leds[stripIndex][startLEDIndex].nscale8(192);
+                // leds[stripIndex][startLEDIndex].fadeToBlackBy(64);
+                // nscale8(CRGB leds[stripIndex][startLEDIndex, GroupWidth, 25);
+              } else {
+                leds[stripIndex][startLEDIndex + (GroupWidth - (animate_Step[pattern] - GroupWidth)) -1] = LedConfig.state_color[state];
+                // leds[stripIndex][startLEDIndex].nscale8(192);
+              }
+              // for (int i=3:i>0;i--)
+              //   animateFade[pattern][i]=animateFade[pattern][i-1];
+              // animateFade[pattern][0]=LedConfig.state_color[state]*3/4;
+              break;
+
+
+
+      case 8: animate_Step[pattern]=animate_Step[pattern]%(GroupWidth/2);
+              // 8 Animate ><        [#      #]
+              //                     [ #    # ]
+              //                     [  #  #  ]
+              //                     [   ##   ]
+              for(int i=0; i<GroupWidth; i++) {
+                leds[stripIndex][startLEDIndex+i].fadeToBlackBy(192);
+              }
+
+              leds[stripIndex][startLEDIndex + animate_Step[pattern]] = LedConfig.state_color[state];;
+              leds[stripIndex][startLEDIndex+GroupWidth - animate_Step[pattern] -1] = LedConfig.state_color[state];;
+              break;
+
+      case 9: animate_Step[pattern]=animate_Step[pattern]%(GroupWidth/2);
+              // 9 Animate ><        [   ##   ]
+              //                     [  #  #  ]
+              //                     [ #    # ]
+              //                     [#      #]
+              for(int i=0; i<GroupWidth; i++) {
+                leds[stripIndex][startLEDIndex+i].fadeToBlackBy(192);
+              }
+              leds[stripIndex][startLEDIndex + (GroupWidth/2) - animate_Step[pattern] -1] = LedConfig.state_color[state];;
+              leds[stripIndex][startLEDIndex + (GroupWidth/2) + animate_Step[pattern]] = LedConfig.state_color[state];;
+              break;
+
+  }
 }
 
 void SetAllLEDs(CRGB color){
@@ -755,17 +865,16 @@ void SetAllLEDs(CRGB color){
   FastLED.show();
 }
 
-
 void SetConfigParameters(char *Data){
   char ConfigItem = Data[0];
-  char *Value = Data +2; 
+  char *Value = Data +2;
   int value_int=0;
   if (Data[1] == ':') {
     switch (ConfigItem) {
-      // set Idenitfier
-      case 'i':
+      // set Name-Idenitfier
+      case 'n':
         Serial.println();
-        Serial.print("Identifier           : " );
+        Serial.print("Controller Name (ID)   : " );
         strcpy(LedConfig.identifier,Value);
         Serial.println(LedConfig.identifier);
         break;
@@ -777,6 +886,7 @@ void SetConfigParameters(char *Data){
           Serial.print("LEDs per shelf       : " );
           LedConfig.numLedsPerStrip = atoi(Value);
           Serial.println(LedConfig.numLedsPerStrip);
+          FastLED.clearData();
         } else {
           Serial.print("Invalid number of leds per strip(");
           Serial.print(NUM_LEDS_PER_STRIP_MIN);
@@ -785,17 +895,18 @@ void SetConfigParameters(char *Data){
           Serial.println(")");
         }
         break;
-      // set Positions per shelf
+      // set terminals per shelf
       case 't':
         Serial.println();
         value_int=atoi(Value);
-        if (value_int>=1 and value_int <= NUM_POSITIONS_PER_STRIP_MAX) {
-          Serial.print("Positions per shelf  : " );
-          LedConfig.numPositionsPerStrip = value_int;
-          Serial.println(LedConfig.numPositionsPerStrip);
+        if (value_int>=1 and value_int <= NUM_GROUPS_PER_STRIP_MAX) {
+          Serial.print("Terminals per shelf  : " );
+          LedConfig.numGroupsPerStrip = value_int;
+          Serial.println(LedConfig.numGroupsPerStrip);
+          FastLED.clearData();
         } else {
-          Serial.print("Invalid number of Position per shelf (1-");
-          Serial.print(NUM_POSITIONS_PER_STRIP_MAX);
+          Serial.print("Invalid number of terminal per shelf (1-");
+          Serial.print(NUM_GROUPS_PER_STRIP_MAX);
           Serial.println(")");
         }
         break;
@@ -807,6 +918,7 @@ void SetConfigParameters(char *Data){
           Serial.print("Amount of shelves    : " );
           LedConfig.numStrips = value_int;
           Serial.println(LedConfig.numStrips);
+          FastLED.clearData();
         } else {
           Serial.print("Invalid number of shelves (1-");
           Serial.print(NUM_STRIPS_MAX);
@@ -822,6 +934,7 @@ void SetConfigParameters(char *Data){
           Serial.print("Spacer width         : " );
           LedConfig.spacerWidth = value_int;
           Serial.println(LedConfig.spacerWidth);
+          FastLED.clearData();
         } else {
           Serial.print("Invalid space width(0-");
           Serial.print(SPACER_WIDTH_MAX);
@@ -835,11 +948,30 @@ void SetConfigParameters(char *Data){
           Serial.print("Start offset         : " );
           LedConfig.startOffset = value_int;
           Serial.println(LedConfig.startOffset);
+          FastLED.clearData();
         } else {
           Serial.print("Invalid start offset (0-");
           Serial.print(START_OFFSET_MAX);
           Serial.println(")");
-          
+        }
+        break;
+      // Set animate interval
+      case 'a':
+        Serial.println();
+        value_int=atoi(Value);
+        if (value_int >= ANIMATE_INTERVAL_MIN and value_int <= ANIMATE_INTERVAL_MAX){
+          Serial.print("Animation interval   : " );
+          LedConfig.animateinterval = value_int;
+          Serial.println(LedConfig.animateinterval);
+          animate_Timer.detach();
+          animate_Timer.attach_ms(LedConfig.animateinterval, &AnimateStep);
+          FastLED.clearData();
+        } else {
+          Serial.print("Invalid animate interval (");
+          Serial.print(ANIMATE_INTERVAL_MIN);
+          Serial.print("-");
+          Serial.print(ANIMATE_INTERVAL_MAX);
+          Serial.println(" msec)");
         }
         break;
       // Set blink interval
@@ -852,9 +984,10 @@ void SetConfigParameters(char *Data){
             LedConfig.blinkinterval = value_int;
             Serial.println(LedConfig.blinkinterval);
             blink_Timer.detach();
-            blink_Timer.attach_ms(LedConfig.blinkinterval, &SetblinkState); 
+            blink_Timer.attach_ms(LedConfig.blinkinterval, &SetblinkState);
+            FastLED.clearData();
           } else {
-            Serial.print("Invalid blinking-interval, needs to be bigger than current update-interval (");  
+            Serial.print("Invalid blinking-interval, needs to be bigger than current update-interval (");
             Serial.print(LedConfig.updateinterval);
             Serial.println(")");
           }
@@ -866,6 +999,7 @@ void SetConfigParameters(char *Data){
           Serial.println(" msec)");
         }
           break;
+
       // Set update interval
       case 'u':
         Serial.println();
@@ -874,13 +1008,14 @@ void SetConfigParameters(char *Data){
           if (value_int < LedConfig.blinkinterval) {
             Serial.print("Update interval      : ");
             LedConfig.updateinterval = value_int;
-            Serial.println(LedConfig.updateinterval);          
-            setposition_Timer.detach();
-            setposition_Timer.attach_ms(LedConfig.updateinterval*2, &SetPositionState); 
+            Serial.println(LedConfig.updateinterval);
+            setgroup_Timer.detach();
+            setgroup_Timer.attach_ms(LedConfig.updateinterval*2, &SetGroupState);
             update_Timer.detach();
-            update_Timer.attach_ms(LedConfig.updateinterval, &WriteLedstripData); 
+            update_Timer.attach_ms(LedConfig.updateinterval, &WriteLedstripData);
+            FastLED.clearData();
           } else {
-            Serial.print("Invalid update-interval, needs to be smaller than current blink-interval (");  
+            Serial.print("Invalid update-interval, needs to be smaller than current blink-interval (");
             Serial.print(LedConfig.blinkinterval);
             Serial.println(")");
           }
@@ -892,6 +1027,22 @@ void SetConfigParameters(char *Data){
           Serial.println(" msec)");
         }
         break;
+
+      // Set Brightness Inetensity
+      case 'i':
+        Serial.println();
+        value_int=atoi(Value);
+        if (value_int>=0 and value_int <= 255){
+          Serial.print("Brightness intensity   : " );
+          LedConfig.brightness = value_int;
+          Serial.println(LedConfig.brightness);
+          FastLED.setBrightness(LedConfig.brightness);
+          FastLED.clearData();
+        } else {
+          Serial.println("Invalid brightness intensity (0-255)");
+        }
+        break;
+
       // Set shelf-order
       case 'z':
         Serial.println();
@@ -901,6 +1052,7 @@ void SetConfigParameters(char *Data){
         } else if (*Value == 'A' or *Value == 'a' or *Value == 'Y' or *Value == 'y' or *Value == 'T' or *Value == 't') {
           LedConfig.altShelfOrder = true;
           Serial.println("Alt. Shelf order     : True");
+          FastLED.clearData();
          } else {
           Serial.println("Invalid pattern, choose between N (no) or A/Y (Alt/Yes)");
         }
@@ -908,36 +1060,41 @@ void SetConfigParameters(char *Data){
       // Set color-patern (colorblind assist)
       case 'p':
         setLedStatePattern(Value);
+        FastLED.clearData();
         break;
       // set colors
       case 'c':
         setLedStateColor(Value);
+        FastLED.clearData();
         break;
-      //Set RGB/RGBW leds 
-      // PLEASE READ THE NOTE ABOUT RGBW LEDS IN THE HEADER!!!!
+      //Set RGB/RGBW leds
       case '4':
         Serial.println();
         if (*Value == 'N' or *Value == 'n' or *Value == 'F' or *Value == 'f') {
           LedConfig.useRGBWleds = false;
           Serial.println("Using RGBW leds      : False");
           Serial.println("Please note a MCU reboot is required to activate a change in RGB/RGBW mode");
+          FastLED.clearData();
         } else if (*Value == 'A' or *Value == 'a' or *Value == 'Y' or *Value == 'y' or *Value == 'T' or *Value == 't') {
           LedConfig.useRGBWleds = true;
           Serial.println("Using RGBW leds      : True");
           Serial.println("Please note a MCU reboot is required to activate a change in RGB/RGBW mode");
+          FastLED.clearData();
          } else {
           Serial.println("Invalid pattern, choose between N (no) or A/Y (Alt/Yes)");
         }
         break;
       // Set GPIO pins
-      case 'x': 
+      case 'x':
         setLedStripGPIO(Value);
+        FastLED.clearData();
         break;
       // set defaults
       case 'd':
         Serial.println();
         resetToDefaults();
         Serial.println("Configuration reset to defaults\n");
+        FastLED.clearData();
         break;
       default:
         Serial.print("SYNTAX ERROR: Use <A-Z>, H for help.\n" );
@@ -945,7 +1102,7 @@ void SetConfigParameters(char *Data){
     }
   } else {
     Serial.print("SYNTAX ERROR: Use <A-Z>, H for help.\n" );
-  } 
+  }
 }
 
 void setLedStripGPIO(char *Value) {
@@ -953,25 +1110,25 @@ void setLedStripGPIO(char *Value) {
     uint8_t strip = Value[0] - '0' -1;
 
     if (strip >= 0 && strip < NUM_STRIPS_DEFAULT) {
-      char *GPIO_RAW = Value + 2; 
+      char *GPIO_RAW = Value + 2;
       uint8_t GPIO_PIN = strtoul(GPIO_RAW, NULL, 16);
       if ( GPIO_PIN > GPIO_PIN_MIN && GPIO_PIN <= GPIO_PIN_MAX) {
 
         // Test if GPIO pin is not assigned already
-        for (uint8_t STRIP=0; STRIP<NUM_STRIPS_DEFAULT ; STRIP++) {    
+        for (uint8_t STRIP=0; STRIP<NUM_STRIPS_DEFAULT ; STRIP++) {
           if (GPIO_PIN == LedConfig.stripGPIOpin[STRIP]) {
             Serial.print("ERROR: GPIO-PIN ");
             Serial.print(GPIO_PIN);
-            Serial.print(" is already used for strip "); 
+            Serial.print(" is already used for strip ");
             Serial.print(STRIP);
-            Serial.print(" !"); 
+            Serial.print(" !");
             return;
           }
         }
         if (GPIO_PIN == CPULED_GPIO) {
           Serial.print("ERROR: GPIO-PIN ");
           Serial.print(GPIO_PIN);
-          Serial.print(" is already used for CPULED !"); 
+          Serial.print(" is already used for CPULED !");
           return;
         }
 
@@ -1007,7 +1164,7 @@ void setLedStateColor(char *Value) {
   if (Value[1] == ':') {
     int state = Value[0] - '0';
     if (state > 0 && state <= 9) {
-      char *Color = Value + 2; 
+      char *Color = Value + 2;
       uint32_t RGB = strtoul(Color, NULL, 16);
       if (RGB > 0 && RGB < 0xFFFFFFFF) {
         LedConfig.state_color[state] = RGB + 0xFF000000; // Add brightness
@@ -1031,7 +1188,7 @@ void setLedStateColor(char *Value) {
 
 void setLedStatePattern(char *Value) {
   if (Value[1] == ':') {
-    uint8_t state = Value[0] - '0'; 
+    uint8_t state = Value[0] - '0';
     if (state > 0 && state <= 9) {
       uint8_t pattern = Value[2] - '0';
 
@@ -1059,7 +1216,7 @@ void resetToDefaults() {
   strcpy(LedConfig.identifier, IDENTIFIER_DEFAULT);
   LedConfig.numLedsPerStrip = NUM_LEDS_PER_STRIP_DEFAULT;
   LedConfig.numStrips = NUM_STRIPS_DEFAULT;
-  LedConfig.numPositionsPerStrip = NUM_POSITIONS_PER_STRIP_DEFAULT;
+  LedConfig.numGroupsPerStrip = NUM_GROUPS_PER_STRIP_DEFAULT;
   LedConfig.spacerWidth = SPACER_WIDTH_DEFAULT;
   LedConfig.startOffset = START_OFFSET;
   LedConfig.blinkinterval = BLINK_INTERVAL;
@@ -1092,7 +1249,7 @@ void resetToDefaults() {
   LedConfig.stripGPIOpin[4] = 6;
   LedConfig.stripGPIOpin[5] = 7;
   LedConfig.stripGPIOpin[6] = 8;
-  LedConfig.stripGPIOpin[7] = 9; 
+  LedConfig.stripGPIOpin[7] = 9;
 }
 
 void ShowConfiguration() {
@@ -1100,74 +1257,82 @@ void ShowConfiguration() {
   memset(output, '\0', sizeof(output));
 
   Serial.print("Identifier           : ");
-  Serial.println(LedConfig.identifier); 
+  Serial.println(LedConfig.identifier);
 
   Serial.print("LEDs per shelf       : ");
-  Serial.println(LedConfig.numLedsPerStrip); 
+  Serial.println(LedConfig.numLedsPerStrip);
 
-  Serial.print("Positions per shelf  : ");
-  Serial.println(LedConfig.numPositionsPerStrip); 
+  Serial.print("Terminals per shelf  : ");
+  Serial.println(LedConfig.numGroupsPerStrip);
 
   Serial.print("Amount of shelves    : ");
-  Serial.println(LedConfig.numStrips); 
+  Serial.println(LedConfig.numStrips);
 
   Serial.print("Spacer width         : ");
-  Serial.println(LedConfig.spacerWidth); 
+  Serial.println(LedConfig.spacerWidth);
 
   Serial.print("Start Offset         : ");
-  Serial.println(LedConfig.startOffset); 
+  Serial.println(LedConfig.startOffset);
 
   Serial.print("Blinking interval    : ");
-  Serial.println(LedConfig.blinkinterval); 
+  Serial.println(LedConfig.blinkinterval);
 
   Serial.print("Update interval      : ");
-  Serial.println(LedConfig.updateinterval); 
-  
+  Serial.println(LedConfig.updateinterval);
+
+  Serial.print("Animate interval     : ");
+  Serial.println(LedConfig.animateinterval);
+
   Serial.print("Alt. shelf order     : ");
   if (LedConfig.altShelfOrder == true )
-    Serial.println("True");      
+    Serial.println("True");
   else
-    Serial.println("False");      
-  
+    Serial.println("False");
+
   Serial.print("Using RGBW leds      : ");
   if (LedConfig.useRGBWleds == true )
-    Serial.println("True");      
+    Serial.println("True");
   else
-    Serial.println("False");      
+    Serial.println("False");
 
-  Serial.println(); 
-  Serial.print("Shelve LedStrip      : "); 
+  Serial.println();
+  Serial.print("Shelve LedStrip      : ");
   for (uint8_t strip=0; strip<NUM_STRIPS_DEFAULT; strip++) {
     sprintf(output, "%2d  ", strip+1);
-    Serial.print(output);    
+    Serial.print(output);
   }
-  Serial.println(); 
-  Serial.print("GPIO-PIN             : "); 
+  Serial.println();
+  Serial.print("GPIO-PIN             : ");
   for (uint8_t strip=0; strip<NUM_STRIPS_DEFAULT; strip++) {
     sprintf(output, " %02d ", LedConfig.stripGPIOpin[strip] );
-    Serial.print(output);    
+    Serial.print(output);
   }
-  Serial.println(); 
+  Serial.println();
 
-  Serial.println(); 
+  Serial.println();
   for (int state=1; state<=9; state++) {
-    sprintf(output, "Color state %d        : %02X%02X%02X (RRGGBB) Pattern: %d", 
-      state, 
-      LedConfig.state_color[state].red, 
-      LedConfig.state_color[state].green, 
-      LedConfig.state_color[state].blue, 
+    sprintf(output, "Color state %d        : %02X%02X%02X (RRGGBB) Pattern: %d",
+      state,
+      LedConfig.state_color[state].red,
+      LedConfig.state_color[state].green,
+      LedConfig.state_color[state].blue,
       LedConfig.state_pattern[state]
     );
-    Serial.println(output);    
+    Serial.println(output);
   }
-  Serial.println(); 
+  Serial.println();
+
+  Serial.print("Overall broghtness   : ");
+  Serial.println(LedConfig.brightness);
+
+  Serial.println();
 }
 
 char* readFile(const char * path) {
   CPULED(0x00,0x00,0x80);
   File fileH = LittleFS.open(F(path), "r");
   if (!fileH) {
-    Serial.println("NOTE: Failed opening confgfile\n" );
+    Serial.print("NOTE: Failed opening confgfile\n" );
     return 0;
   }
 
@@ -1181,7 +1346,7 @@ char* readFile(const char * path) {
   }
 
   fileH.readBytes(data, fileSize);
-  data[fileSize] = '\0'; 
+  data[fileSize] = '\0';
 
   fileH.close();
   return data;
@@ -1214,7 +1379,7 @@ bool loadConfiguration() {
     // Calulate sizes to separate struct and checksum in buffer
     int structSize=sizeof(LedData);
     int totalSize = structSize + 32;  // 32 for the saved binary checksum
- 
+
     // Separate the data and the checksum
     uint8_t loadedChecksum[32];
     memcpy(loadedChecksum, buffer + structSize, 32);  // Extract the checksum from the file
@@ -1225,9 +1390,9 @@ bool loadConfiguration() {
     sha256.update((const uint8_t*)buffer, structSize);  // Recalculate the checksum for LedData
     uint8_t calculatedChecksum[32];
     sha256.finalize(calculatedChecksum, sizeof(calculatedChecksum));
-    
+
     // Compare the loaded checksum with the recalculated checksum
-    if (memcmp(loadedChecksum, calculatedChecksum, 32) == 0) {         
+    if (memcmp(loadedChecksum, calculatedChecksum, 32) == 0) {
       // Checksums match, proceed to load LedConfig
       // DeSeriallize buffer into LedData Struct
       memcpy(&LedConfig, buffer, structSize);
@@ -1256,7 +1421,7 @@ bool saveConfiguration() {
   sha256.reset();
   sha256.update((const uint8_t*)buffer, sizeof(buffer));
   uint8_t hash[32];
-  sha256.finalize(hash, sizeof(hash)); 
+  sha256.finalize(hash, sizeof(hash));
 
   // Create a final buffer containing the serialized data + checksum (in binary)
   char finalBuffer[sizeof(buffer) + 32];           // 32 bytes for the checksum
@@ -1272,15 +1437,15 @@ void FadeAll(int StartLed=1, int EndLed=LedConfig.numLedsPerStrip, float fadeFac
   for(int i = StartLed; i < EndLed; i++)
     for(int n = 0; n < LedConfig.numStrips; n++) {
       // leds[n][i].nscale8(200)
-      leds[n][i].r=leds[n][i].r/fadeFactor; 
-      leds[n][i].g=leds[n][i].g/fadeFactor; 
-      leds[n][i].b=leds[n][i].b/fadeFactor; 
+      leds[n][i].r=leds[n][i].r/fadeFactor;
+      leds[n][i].g=leds[n][i].g/fadeFactor;
+      leds[n][i].b=leds[n][i].b/fadeFactor;
       #ifdef RGBW
-      leds[n][i].w=leds[n][i].w/fadeFactor; 
+      leds[n][i].w=leds[n][i].w/fadeFactor;
       #endif
     }
 }
- 
+
 void StartupLoop() {
   // Boot animation
   CPULED(0x00,0x00,0x80);
@@ -1290,14 +1455,14 @@ void StartupLoop() {
   CRGB color = 0x00FF00;
   for(int i = 0; i < LedConfig.numLedsPerStrip/2; i+=1) {
     for(int n = 0; n < LedConfig.numStrips; n++) {
-      leds[n][i] = color; 
+      leds[n][i] = color;
       leds[n][LedConfig.numLedsPerStrip -i -1] = color;
     }
     FastLED.show();
     FadeAll(0,LedConfig.numLedsPerStrip,1.4);
     delay(DELAY);
   }
- 
+
   //  Flash [######]
   SetAllLEDs(CRGB::Green);
   FastLED.show();
@@ -1307,7 +1472,7 @@ void StartupLoop() {
     FastLED.show();
     delay(65);
   }
- 
+
   // All Off [      ]
   //SetAllLEDs(CRGB::Black);
   FastLED.clear(true);
