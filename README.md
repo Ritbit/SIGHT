@@ -33,11 +33,11 @@ There are ready for use PCB's in the PCB foler, you can import them into [EasyED
 
 ## Compile
 The source code for the firmware con be compile using the userfriendly [Arduino IDE](https://www.arduino.cc/en/software), please make sure to install the libraries for:
--- RaspBerry Pi Pico / RP2040
--- FastLED
--- LittleFS
--- Crypto
--- Ticker
+ - RaspBerry Pi Pico / RP2040
+ - FastLED
+ - LittleFS
+ - Crypto
+ - Ticker
 
 ## Usage: 
 Upon connection, the controller will undergo a startup sequence. When the serial port is inactive (not opened in any application), the onboard LED will pulse red slowly, and all eight outputs will sequentially pulse every 200 ms with a 1-second interval for testing purposes. Once the serial port is opened, a welcome animation will play on all LED strips, followed by loading configuration settings from flash memory if available.
