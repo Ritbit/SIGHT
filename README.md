@@ -3,20 +3,38 @@
 
 ![SIGHT Installation](images/castlewall.jpg?raw=true "SIGHT instalation")
 
+# What is S.I.G.H.T.
 
-This 8-Channel LED Strip Controller is designed for use in warehouse order picking or as shelf position indicators. By connecting to your system via USB, it identifies as a serial port, allowing for straightforward interaction and control.
+S.I.G.H.T. is an 8-Channel LED Strip Controller is designed for use in warehouse order picking or as shelf position indicators. 
+By connecting to your system via USB, it identifies as a serial port, allowing for straightforward interaction and control.
 The main setup is based on an RP2040 microcontroller from Waveshare, but it will work find on any RP2040 MCU.
+For the indicated common WS28xx ledstrips can be used.
 
+
+## RP2040 Zero
 ![RP2040 Zero](images/RP2040-Zero.png?raw=true "RP2040 Zero")
 
 The model used in my PCB is this one: [https://www.waveshare.com/wiki/RP2040-Zero](https://www.waveshare.com/wiki/RP2040-Zero)
 But it works just s fine on the much cheaper clones from AliExpress: [https://nl.aliexpress.com/w/wholesale-RP2040%2525252dZero.html](https://nl.aliexpress.com/w/wholesale-RP2040%2525252dZero.html)
 
+
+## Ledstrips
 It can drive all WS28xx based ledstrips although I recoment the 5v based WS-2813 (for the redundant data) or the 12V WS-2815 (for longer lengths, over 1.5mtr)
-The controller and driver board are both suitable for 5v and 12v strips. (For more details abotu LEDstrips see [user-guide-for-ws2812b-ws2811-sk6812-and-ws2815](https://www.superlightingled.com/blog/a-user-guide-for-ws2812b-ws2811-sk6812-and-ws2815/)
+The controller and driver board are both suitable for 5v and 12v strips. 
+
 ![LEdStrip models](images/ledstrip-models.png?raw=true "LedStrip models")
 
+For more details about LEDstrips see [user-guide-for-ws2812b-ws2811-sk6812-and-ws2815](https://www.superlightingled.com/blog/a-user-guide-for-ws2812b-ws2811-sk6812-and-ws2815/)
 
+
+## PCB's
+There are ready for use PCB's in the PCB foler, you can import them into [EasyEDA](https://easyeda.com/) and from there send in the oder to [JLCPCB](https://jlcpcb.com/) to the the ready for use PCB.s
+
+
+## Compile
+
+
+## Usage: 
 Upon connection, the controller will undergo a startup sequence. When the serial port is inactive (not opened in any application), the onboard LED will pulse red slowly, and all eight outputs will sequentially pulse every 200 ms with a 1-second interval for testing purposes. Once the serial port is opened, a welcome animation will play on all LED strips, followed by loading configuration settings from flash memory if available.
 
 The startup sequence output will look as follows:
