@@ -1,15 +1,21 @@
 # S.I.G.H.T
 **S**helf **I**ndicators for **G**uided **H**andling **T**asks 
 
+![SIGHT Installation](images/castlewall.jpg?raw=true "SIGHT instalation")
+
 
 This 8-Channel LED Strip Controller is designed for use in warehouse order picking or as shelf position indicators. By connecting to your system via USB, it identifies as a serial port, allowing for straightforward interaction and control.
 The main setup is based on an RP2040 microcontroller from Waveshare, but it will work find on any RP2040 MCU.
+
+![RP2040 Zero](images/RP2040-Zero-RP2040.jpg?raw=true "RP2040 Zero")
 
 The model used in my PCB is this one: [https://www.waveshare.com/wiki/RP2040-Zero](https://www.waveshare.com/wiki/RP2040-Zero)
 But it works just s fine on the much cheaper clones from AliExpress: [https://nl.aliexpress.com/w/wholesale-RP2040%2525252dZero.html](https://nl.aliexpress.com/w/wholesale-RP2040%2525252dZero.html)
 
 It can drive all WS28xx based ledstrips although I recoment the 5v based WS-2813 (for the redundant data) or the 12V WS-2815 (for longer lengths, over 1.5mtr)
-The controller and driver board are both suitable for 5v and 12v strips.
+The controller and driver board are both suitable for 5v and 12v strips. (For more details abotu LEDstrips see [user-guide-for-ws2812b-ws2811-sk6812-and-ws2815](https://www.superlightingled.com/blog/a-user-guide-for-ws2812b-ws2811-sk6812-and-ws2815/)
+![LEdStrip models](images/ledstrip-models.png?raw=true "LedStrip models")
+
 
 Upon connection, the controller will undergo a startup sequence. When the serial port is inactive (not opened in any application), the onboard LED will pulse red slowly, and all eight outputs will sequentially pulse every 200 ms with a 1-second interval for testing purposes. Once the serial port is opened, a welcome animation will play on all LED strips, followed by loading configuration settings from flash memory if available.
 
