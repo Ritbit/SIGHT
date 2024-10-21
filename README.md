@@ -139,19 +139,19 @@ Set color for a state, eg. set state 2 to orange: send `Cc:2:FF6000`
 Set pattern/animation for a state, eg. set state 2 to chase up/down: send `Cp:2:10`
 
 The hardcode animations are:
-
- 0.  Solid on
- 1.  Blinking
- 2.  Blinking inverted
- 3.  ALternate left/right block   (####    ]   [    ####]
- 4.  Alternate 4-part pattern  [##    ##] [  ####  ]
- 5.  Alternate odd/even LEDs
- 6.  Gated solid  [###  ###]
- 7.  Gated blink  [###  ###] [        ]
- 8.  Chase up >>>>
- 9.  Chase down <<<<
- 10. Chae up/down >>>>><<<<<
- 11. Dual chase in >><<
- 12. Dial chae out <<>>
-
+```
+ 0.  Solid on                     [########]
+ 1.  Blinking                     [########]   [        ]
+ 2.  Blinking inverted            [        ]   [########]
+ 3.  ALternate left/right block   [####    ]   [    ####]
+ 4.  Alternate 4-part pattern     [##    ##]   [  ####  ]
+ 5.  Alternate odd/even LEDs      [# # # # ]   [ # # # #]
+ 6.  Gated solid                  [###  ###]
+ 7.  Gated blink                  [###  ###]   [        ]
+ 8.  Chase up                     [>>>>>>>>]
+ 9.  Chase down                   [<<<<<<<<]           
+ 10. Chae up/down                 [>>>>>>>><<<<<<<<]
+ 11. Dual chase in                [>>>><<<<]
+ 12. Dial chae out                [<<<<>>>>]
+```
 All setting for name, timing, colors and patterna can be saved on flash, those will automatically be loaded upon boot.
