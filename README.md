@@ -47,7 +47,7 @@ The startup sequence output will look as follows:
 ```
 -=[ Shelf Indicators for Guided Handling Tasks ]=-
 
-SIGHT Version  : 1.6
+SIGHT Version   : 1.6
 MicroController : WAVESHARE_RP2040_ZERO
 MCU-Serial      : E6632C85931E832C
 
@@ -58,7 +58,7 @@ Checksum matches, configuration loaded.
 
 Identifier           : SIGHT-1.6
 LEDs per shelf       : 57
-Terminals per shelf  : 6
+Groups per shelf     : 6
 Amount of shelves    : 8
 Spacer width         : 1
 Start Offset         : 1
@@ -70,18 +70,18 @@ Alt. shelf order     : False
 Using RGBW leds      : False
 Overall brightness   : 255
 
-Shelve LedStrip      :  1   2   3   4   5   6   7   8
-GPIO-PIN             : 02 03 04 05 06 07 08 09
+Shelve LedStrip      :  1 |  2 |  3 |  4 |  5 |  6 |  7 | 8
+GPIO-PIN             : 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09
 
 Color state 1        : 008000 (RRGGBB) Pattern: 0
-Color state 2        : FF8C00 (RRGGBB) Pattern: 10
+Color state 2        : FF8C00 (RRGGBB) Pattern: 0
 Color state 3        : FF0000 (RRGGBB) Pattern: 0
 Color state 4        : 0000FF (RRGGBB) Pattern: 0
 Color state 5        : 008000 (RRGGBB) Pattern: 1
 Color state 6        : FF8C00 (RRGGBB) Pattern: 1
 Color state 7        : FF0000 (RRGGBB) Pattern: 1
 Color state 8        : 0000FF (RRGGBB) Pattern: 1
-Color state 9        : FFFFFF (RRGGBB) Pattern: 0
+Color state 9        : FFFFFF (RRGGBB) Pattern: 10
 
 Enter 'H' for help
 
@@ -92,11 +92,11 @@ Enter 'H' for help
 After the initialization, a command prompt (>) will appear, indicating that the controller is ready to accept commands. Below is a list of available commands:
 
 ```
-  T<TermID>:<State>             Set Terminal state. TermID: 1-48 and State: 0-9
-  P<TermID>:<State>:<Pct>       Set Terminal state. TermID: 1-48, State: 0-9, PCt=0-100% progress
-  M:<State><State>...           Set state for multiple Terminals, sequentually listed, e.g: '113110'
-  A:<State>                     Set state for all Terminals, state (0-9)
-  G                             Get states for all Terminals
+  T<TermID>:<State>             Set Group state. TermID: 1-48 and State: 0-9
+  P<TermID>:<State>:<Pct>       Set Group state. TermID: 1-48, State: 0-9, PCt=0-100% progress
+  M:<State><State>...           Set state for multiple Groups, sequentually listed, e.g: '113110'
+  A:<State>                     Set state for all Groups, state (0-9)
+  G                             Get states for all Groups
   X                             Set all states to off (same as sending'A:0'
 
   H                             This help
@@ -106,9 +106,9 @@ After the initialization, a command prompt (>) will appear, indicating that the 
   D                             Show current configuration
   Cn:<string>                   Set Controller name (ID) (1-16 chars)
   Cl:<value>                    Set amount of LEDs per shelf (6-144)
-  Ct:<value>                    Set amount of terminals per shelf (1-16)
+  Ct:<value>                    Set amount of Groups per shelf (1-16)
   Cs:<value>                    Set amount of shelves (1-8)
-  Cw:<value>                    Set spacer-width (LEDs between terminals, 0-20)
+  Cw:<value>                    Set spacer-width (LEDs between Groups, 0-20)
   Co:<value>                    Set starting offset (skipping leds at start of strip, 0-9)
   Cb:<value>                    Set blink-interval in msec (50-3000)
   Cu:<value>                    Set update interfal in mSec (5-500)
@@ -126,3 +126,31 @@ After the initialization, a command prompt (>) will appear, indicating that the 
   S                             Save configuration to EEPROM/FLASH
 ```
 
+To set a status for a group, e.g. set group 1 to status 1,  a send a simple `T1:1`
+
+To send the status for a serie of groups, e.g. send statsu for the first 8 groups: `M:14262435` 
+
+To reset all groups send a `X`
+
+There are 10 differens statuses that can be used, staus 0 is hardcoded ro 'off' (no leds lit), the statuses 1-9 can be freely configured with RGB color and blinking/animations.
+
+Set color for a state, eg. set state 2 to orange: send `Cc:2:FF6000`
+
+Set pattern/animation for a state, eg. set state 2 to chase up/down: send `Cp:2:10`
+
+The hardcode animations are:
+ 0.  Solid on
+ 1.  Blinking
+ 2.  Blinking inverted
+ 3.  ALternate left/right block   (####    ]   [    ####]
+ 4.  Alternate 4-part pattern  [##    ##] [  ####  ]
+ 5.  Alternate odd/even LEDs
+ 6.  Gated solid  [###  ###]
+ 7.  Gated blink  [###  ###] [        ]
+ 8.  Chase up >>>>
+ 9.  Chase down <<<<
+ 10. Chae up/down >>>>><<<<<
+ 11. Dual chase in >><<
+ 12. Dial chae out <<>>
+
+All setting for name, timing, colors and patterna can be saved on flash, those will automatically be loaded upon boot.
