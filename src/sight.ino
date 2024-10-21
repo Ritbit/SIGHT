@@ -39,7 +39,7 @@ TODO:
 #define BLINK_INTERVAL_MIN 50
 #define BLINK_INTERVAL_MAX 3000
 
-#define ANIMATE_INTERVAL 125
+#define ANIMATE_INTERVAL 150
 #define ANIMATE_INTERVAL_MIN 10
 #define ANIMATE_INTERVAL_MAX 1000
 
@@ -63,7 +63,7 @@ TODO:
 
 #define ALTERNATIVE_SHELFORDERING false
 #define BRIGHTNESS 255
-#define FADING 16
+#define FADING 48
 
 #define RGBW_LEDS false;
 
@@ -730,6 +730,7 @@ void SetLEDGroup(uint8_t group, uint8_t state, uint8_t pct) {
               for(int i=0; i<GroupWidth; i++)
                   leds[stripIndex][startLEDIndex +i] = LedConfig.state_color[state]*blinkState;
               break;
+
       case 2:	animate_Step[pattern]=animate_Step[pattern]%2;
               // 1 solid blink inv.  [        ]
               //                     [########]
@@ -1262,6 +1263,8 @@ void resetToDefaults() {
   LedConfig.startOffset = START_OFFSET;
   LedConfig.blinkinterval = BLINK_INTERVAL;
   LedConfig.updateinterval = UPDATE_INTERVAL;
+  LedConfig.brightness = BRIGHTNESS;
+  LedConfig.fading = FADING;
   LedConfig.altShelfOrder = ALTERNATIVE_SHELFORDERING;
   LedConfig.state_pattern[0] = 0; // Fixed since this is black.
   LedConfig.state_pattern[1] = 0; // no blink
@@ -1272,7 +1275,7 @@ void resetToDefaults() {
   LedConfig.state_pattern[6] = 1; // blink by default
   LedConfig.state_pattern[7] = 1; // blink by default
   LedConfig.state_pattern[8] = 1; // blink by default
-  LedConfig.state_pattern[9] = 0; // no blink
+  LedConfig.state_pattern[9] = 10; // up/down
   LedConfig.state_color[1] = COLOR_STATE_1;
   LedConfig.state_color[2] = COLOR_STATE_2;
   LedConfig.state_color[3] = COLOR_STATE_3;
@@ -1343,22 +1346,24 @@ void ShowConfiguration() {
   Serial.println(LedConfig.brightness); 
 
   Serial.println(); 
-  Serial.print("Shelve LedStrip      : "); 
+  Serial.print("Shelve LedStrip      : | "); 
   for (uint8_t strip=0; strip<NUM_STRIPS_DEFAULT; strip++) {
-    sprintf(output, "%2d  ", strip+1);
+    sprintf(output, "%2d | ", strip+1);
     Serial.print(output);    
   }
   Serial.println(); 
-  Serial.print("GPIO-PIN             : "); 
+  Serial.print("GPIO-PIN             : | "); 
   for (uint8_t strip=0; strip<NUM_STRIPS_DEFAULT; strip++) {
-    sprintf(output, "%02d ", LedConfig.stripGPIOpin[strip] );
+    sprintf(output, "%02d | ", LedConfig.stripGPIOpin[strip] );
     Serial.print(output);    
   }
   Serial.println(); 
 
   Serial.println(); 
+  Serial.println("Color state          : RRGGBB    Pattern:");
+  Serial.println("            0        : 000000       0 (fixed)"); 
   for (int state=1; state<=9; state++) {
-    sprintf(output, "Color state %d        : %02X%02X%02X (RRGGBB) Pattern: %d", 
+    sprintf(output, "            %d        : %02X%02X%02X      %2d", 
       state, 
       LedConfig.state_color[state].red, 
       LedConfig.state_color[state].green, 
