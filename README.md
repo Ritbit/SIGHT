@@ -132,7 +132,7 @@ To send the status for a serie of groups, e.g. send statsu for the first 8 group
 
 To reset all groups send a `X`
 
-There are 10 differens statuses that can be used, staus 0 is hardcoded ro 'off' (no leds lit), the statuses 1-9 can be freely configured with RGB color and blinking/animations.
+There are 10 different statuses that can be used, but status 0 is hardcoded to 'off' (all LEDs off), the statuses 1-9 can be freely configured with RGB color and blinking/animations.
 
 Set color for a state, eg. set state 2 to orange: send `Cc:2:FF6000`
 
