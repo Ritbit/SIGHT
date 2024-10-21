@@ -4,7 +4,7 @@
  *
  * Original code by Jim Bumgardner (http://krazydad.com).
  * Modified by David Madison (http://partsnotincluded.com).
- * Modified by Bas van Ritbergen <bas.vanritbergen@adyen.com> <bas@ritbit.com> (https://www.adyen.com).
+ * Modified by Bas van Ritbergen <bas.vanritbergen@adyen.com> <bas@ritbit.com>
  * 
 */
 
