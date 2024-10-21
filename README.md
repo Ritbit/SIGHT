@@ -139,6 +139,7 @@ Set color for a state, eg. set state 2 to orange: send `Cc:2:FF6000`
 Set pattern/animation for a state, eg. set state 2 to chase up/down: send `Cp:2:10`
 
 The hardcode animations are:
+
  0.  Solid on
  1.  Blinking
  2.  Blinking inverted
