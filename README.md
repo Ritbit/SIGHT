@@ -150,8 +150,8 @@ The hardcode animations are:
  7.  Gated blink                  [###  ###]   [        ]
  8.  Chase up                     [>>>>>>>>]
  9.  Chase down                   [<<<<<<<<]           
- 10. Chae up/down                 [>>>>>>>><<<<<<<<]
+ 10. Chase up/down                [>>>>>>>><<<<<<<<]
  11. Dual chase in                [>>>><<<<]
- 12. Dial chae out                [<<<<>>>>]
+ 12. Dual chase out               [<<<<>>>>]
 ```
 All setting for name, timing, colors and patterna can be saved on flash, those will automatically be loaded upon boot.
