@@ -19,8 +19,8 @@ But it works just s fine on the much cheaper clones from AliExpress: [https://nl
 
 
 ## Ledstrips
-It can drive all WS28xx based ledstrips although I recoment the 5v based WS-2813 (for the redundant data) or the 12V WS-2815 (for longer lengths, over 1.5mtr)
-The controller and driver board are both suitable for 5v and 12v strips. 
+It can drive all WS28xx based ledstrips although due to the redundant data lines I recoment the 5v based WS-2813 or the 12V based WS-2815 for longer lengths (over 1.5mtr).
+For 12v strips you have to change the capacitor on the driver board for an 16v model. (An replacement schematics+PCB suitable for both will be added soon).
 
 ![LEdStrip models](images/ledstrip-models.png?raw=true "LedStrip models")
 
