@@ -2,8 +2,10 @@
 Name        : SIGHT (Shelf Indicators for Guided Handling Tasks)
 Version     : 1.6
 Date        : 2024-10-01
+License     : GPL3
 Author      : Bas van Ritbergen <bas.vanritbergen@adyen.com> / bas@ritbit.com
 Description : Replaced patterns with animations.
+
 Notes       : When compiling make sure to reserve a little space for littleFS (8-64k)
 
 TODO:
