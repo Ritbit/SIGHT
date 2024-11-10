@@ -32,12 +32,20 @@ There are ready for use PCB's in the PCB foler, you can import them into [EasyED
 
 
 ## Compile
-The source code for the firmware con be compile using the userfriendly [Arduino IDE](https://www.arduino.cc/en/software), please make sure to install the libraries for:
+The source code for the firmware con be compile using the userfriendly [Arduino IDE](https://www.arduino.cc/en/software), 
+To add support for the Waveshare RP2040 Zero please folllow the instructions here [https://www.waveshare.com/wiki/RP2040-Zero](https://www.waveshare.com/wiki/RP2040-Zero) to add the RP2040-repository to the ArduinoIDE.
+And then install support for this board:
  - RaspBerry Pi Pico / RP2040
+
+Please make sure to install the libraries for:
  - FastLED
  - LittleFS
  - Crypto
  - Ticker
+ - MicroControllerID
+
+
+
 
 ## Usage: 
 Upon connection, the controller will undergo a startup sequence. When the serial port is inactive (not opened in any application), the onboard LED will pulse red slowly, and all eight outputs will sequentially pulse every 200 ms with a 1-second interval for testing purposes. Once the serial port is opened, a welcome animation will play on all LED strips, followed by loading configuration settings from flash memory if available.
