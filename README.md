@@ -33,7 +33,7 @@ There are ready for use PCB's in the PCB foler, you can import them into [EasyED
 
 ## Compile
 The source code for the firmware con be compile using the userfriendly [Arduino IDE](https://www.arduino.cc/en/software), 
-To add support for the Waveshare RP2040 Zero please folllow the instructions here [https://www.waveshare.com/wiki/RP2040-Zero](https://www.waveshare.com/wiki/RP2040-Zero) to add the RP2040-repository to the ArduinoIDE.
+To add support for the Waveshare RP2040 Zero please folllow the instructions here [https://www.waveshare.com/wiki/RP2040-Zero](https://www.waveshare.com/wiki/RP2040-Zero) to add the [Waveshare RP2040-repository](https://www.waveshare.com/wiki/RP2040-Zero) to the ArduinoIDE.
 And then install support for this board:
  - RaspBerry Pi Pico / RP2040
 
