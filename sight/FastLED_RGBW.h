@@ -44,11 +44,12 @@ struct CRGBW  {
 	}
 
 	inline void operator = (const CRGB c) __attribute__((always_inline)){ 
-    if (this->r == this->g && this->r == this->b) {
-      this->r = 0
-      this->r = 0
-      this->r = 0
-      this->w = this->r
+    // If the color is grayscale, treat it as a white value.
+    if (c.r == c.g && c.r == c.b) {
+      this->r = 0;
+      this->g = 0;
+      this->b = 0;
+      this->white = c.r;
     } else {
       this->r = c.r;
       this->g = c.g;
@@ -58,22 +59,9 @@ struct CRGBW  {
 	}
 };
 
-
-void RGBW_color( CRGB *leds  ,int led, int R, int G, int B, int W) {
-    int ind;
-    ind=led*4;
-
-    leds[0][ind]=G;
-    leds[0][ind+1]=R;
-    leds[0][ind+2]=B;
-    leds[0][ind+3]=W;
-}
-
 inline uint16_t getRGBWsize(uint16_t nleds){
-  return (int) (nleds*4/3)+1
-	// uint16_t nbytes = nleds * 4;
-	// if(nbytes % 3 > 0) return nbytes / 3 + 1;
-	// else return nbytes / 3;
+  // Calculate the number of CRGB structs needed to hold nleds of CRGBW data.
+  return (nleds * 4 + 2) / 3;
 }
 
 #endif

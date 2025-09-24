@@ -1,6 +1,6 @@
 /*
 Name        : SIGHT (Shelf Indicators for Guided Handling Tasks)
-Version     : 1.6
+Version     : 1.7b
 Date        : 2024-10-01
 License     : GPL3
 Author      : Bas van Ritbergen <bas.vanritbergen@adyen.com> / bas@ritbit.com
@@ -32,7 +32,6 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // Basic defaults 
 #define CONFIG_IDENTIFIER "SIGHT-CONFIG"
-#define IDENTIFIER_DEFAULT "SIGHT-1.6"
 #define NUM_LEDS_PER_STRIP_DEFAULT 57
 #define NUM_LEDS_PER_STRIP_MIN 6
 #define NUM_LEDS_PER_STRIP_MAX 144
@@ -81,12 +80,10 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #define BRIGHTNESS 255
 #define FADING 48
 
-#define RGBW_LEDS false;
-
 #define GPIO_PIN_MIN 2
 #define GPIO_PIN_MAX 26
 
-// Uncomment for RGBW strips:
+// To use RGBW strips, set the option via serial command 'C4:yes' and reboot.
 //#define RGBW true
 
 // Define the pin connected to WS2812B
@@ -99,36 +96,28 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 // No configurable items below
 
 // This Version
-#define VERSION "1.6"
+#define VERSION "1.7beta"
+constexpr const char* IDENTIFIER_DEFAULT = "SIGHT-1.7beta";
 
 // Define max length for Input/Ouput buffers:
 #define MAX_INPUT_LEN MAX_TERMINALS+4
 #define MAX_OUTPUT_LEN 60
-
-// We definitely need these libraries
 #include <Arduino.h>
 #include <Ticker.h>
 #include <Crypto.h>
 #include <SHA256.h>
 #include "LittleFS.h"
 #include <FastLED.h>
-#ifdef RGBW
-  #include "FastLED_RGBW.h"
-#endif
+#include "FastLED_RGBW.h"
 #include "hardware/watchdog.h"
 
 // Figure MCU type/serial
 #include <MicrocontrollerID.h>
 char MCUid [41];
 
-// Declare LedStrip control arrays
-//CRGB leds[NUM_STRIPS_DEFAULT+1][NUM_LEDS_PER_STRIP_DEFAULT];
-// We cannot dynamically change this without crashing... :-(
-#ifdef RGBW
-CRGBW leds[NUM_STRIPS_DEFAULT+1][NUM_LEDS_PER_STRIP_MAX];
-#else
-CRGB leds[NUM_STRIPS_DEFAULT+1][NUM_LEDS_PER_STRIP_MAX];
-#endif
+// Always use CRGBW array for unified RGB/RGBW handling.
+// The 'w' byte is ignored by FastLED for RGB strips.
+CRGBW leds[NUM_STRIPS_DEFAULT][NUM_LEDS_PER_STRIP_MAX];
 
 // Config data is conviently stored in a struct (to easy store and retrieve from EEPROM/Flash)
 // Set defaults, they will be overwritten by load from EEPROM
@@ -145,7 +134,7 @@ struct LedData {
   uint16_t brightness = BRIGHTNESS;
   uint16_t fading = FADING;
   bool     altShelfOrder = ALTERNATIVE_SHELFORDERING;
-  bool     useRGBWleds = RGBW_LEDS;
+  bool     useRGBWleds = false;
   uint8_t  stripGPIOpin[8] = {2,3,4,5,6,7,8,9};
   uint8_t  state_pattern[12] = {0,0,0,0,0,1,1,1,1,0};
   CRGB     state_color[10] = {CRGB::Black, COLOR_STATE_1, COLOR_STATE_2, COLOR_STATE_3, COLOR_STATE_4, COLOR_STATE_1, COLOR_STATE_2, COLOR_STATE_3, COLOR_STATE_4, CRGB::White};
@@ -288,10 +277,10 @@ void setup() {
 
   int MAX_LEDS=0;
 
-  MAX_LEDS=(LedConfig.useRGBWleds)?LedConfig.numLedsPerStrip:LedConfig.numLedsPerStrip*(4/3)+1;
-  // MAX_LEDS=(LedConfig.useRGBWleds)?NUM_LEDS_PER_STRIP_MAX:NUM_LEDS_PER_STRIP_MAX*(4/3)+1;
+  // The number of LEDs FastLED needs to address. This is different for RGBW.
+  MAX_LEDS = LedConfig.useRGBWleds ? getRGBWsize(LedConfig.numLedsPerStrip) : LedConfig.numLedsPerStrip;
 
-  for (uint8_t STRIP=0; STRIP<NUM_STRIPS_DEFAULT ; STRIP++) {
+  for (uint8_t STRIP=0; STRIP < LedConfig.numStrips ; STRIP++) {
     pinMode(LedConfig.stripGPIOpin[STRIP], OUTPUT);
     if (LedConfig.stripGPIOpin[STRIP] != CPULED_GPIO){
       switch (LedConfig.stripGPIOpin[STRIP]) {
@@ -407,14 +396,13 @@ void handleSerialInput() {
     } 
     else 
     if (c == '\n' || c == '\r') {
+      if (bufferIndex == 0 && c == '\n') return; // Ignore empty newline
       inputBuffer[bufferIndex] = '\0'; // Null-terminate the string
       Serial.println();
       checkInput(inputBuffer);
       Serial.print("> ");
       bufferIndex = 0;
-    }
-    else 
-    if (c == 0x08 && bufferIndex > 0) { // Backspace
+    } else if (c == 0x08 && bufferIndex > 0) { // Backspace
       bufferIndex--;
       Serial.print(c);  
       Serial.print(' ');  
@@ -434,7 +422,7 @@ bool isPrintable(char c) {
 
 void checkInput(char input[MAX_INPUT_LEN]) {
   CPULED(0x00,0x00,0x80);
-  if (input[0] == 0) {
+  if (input[0] == '\0') {
     Serial.println("");
     return;
   }
@@ -1222,7 +1210,7 @@ void setLedStateColor(char *Value) {
       char *Color = Value + 2; 
       uint32_t RGB = strtoul(Color, NULL, 16);
       if (RGB > 0 && RGB < 0xFFFFFFFF) {
-        LedConfig.state_color[state] = RGB + 0xFF000000; // Add brightness
+        LedConfig.state_color[state] = RGB;
         sprintf(buffer, "%06X", (int)RGB);
         Serial.print("Color for state ");
         Serial.print(state);
@@ -1246,11 +1234,12 @@ void setLedStatePattern(char *Value) {
 //         0123
 
   if (Value[1] == ':') {
-    Value[4]=0; // No more that 2 chars (digits) allowed
+    char pattern_str[3] = {0};
+    strncpy(pattern_str, Value + 2, 2);
     uint8_t state = Value[0] - '0'; 
     if (state > 0 && state <= 9) {
-      int pattern=atoi(Value+2);
-      if ( pattern <= 12) {
+      int pattern=atoi(pattern_str);
+      if (pattern >= 0 && pattern <= 12) {
         LedConfig.state_pattern[state] = pattern;
         Serial.print("Pattern for state ");
         Serial.print(state);
@@ -1264,7 +1253,7 @@ void setLedStatePattern(char *Value) {
       Serial.println("Invalid state, 1-12 only");
     }
   } else {
-    Serial.println("Syntax error: use Cp:<state>:<pattern>     (<state>: 0-9, <pattern>: 0-9)\n");
+    Serial.println("Syntax error: use Cp:<state>:<pattern>     (<state>: 0-9, <pattern>: 0-12)\n");
   }
 }
 
@@ -1300,8 +1289,8 @@ void resetToDefaults() {
   LedConfig.state_color[6] = COLOR_STATE_2;
   LedConfig.state_color[7] = COLOR_STATE_3;
   LedConfig.state_color[8] = COLOR_STATE_4;
-  LedConfig.state_color[9] = CRGB::White;
-  LedConfig.useRGBWleds = RGBW_LEDS;
+  LedConfig.state_color[9] = CRGB::White; // This will be treated as white for RGBW strips
+  LedConfig.useRGBWleds = false;
   LedConfig.stripGPIOpin[0] = 2;
   LedConfig.stripGPIOpin[1] = 3;
   LedConfig.stripGPIOpin[2] = 4;
@@ -1396,11 +1385,11 @@ char* readFile(const char * path) {
   CPULED(0x00,0x00,0x80);
   File fileH = LittleFS.open(F(path), "r");
   if (!fileH) {
-    Serial.print("NOTE: Failed opening confgfile\n" );
-    return 0;
+    Serial.print("NOTE: Failed opening configfile\n" );
+    return nullptr;
   }
 
-  long fileSize=fileH.size();
+  size_t fileSize=fileH.size();
 
   char *data = new char[fileSize+1];
   if (data == nullptr) {
@@ -1502,11 +1491,9 @@ void FadeAll(int StartLed=1, int EndLed=LedConfig.numLedsPerStrip, float fadeFac
     for(int n = 0; n < LedConfig.numStrips; n++) {
       // leds[n][i].nscale8(200)
       leds[n][i].r=leds[n][i].r/fadeFactor; 
-      leds[n][i].g=leds[n][i].g/fadeFactor; 
-      leds[n][i].b=leds[n][i].b/fadeFactor; 
-      #ifdef RGBW
+      leds[n][i].g=leds[n][i].g/fadeFactor;
+      leds[n][i].b=leds[n][i].b/fadeFactor;
       leds[n][i].w=leds[n][i].w/fadeFactor; 
-      #endif
     }
 }
  
@@ -1554,38 +1541,36 @@ void StartupLoop() {
 #define RESET_TIME 100
 
 inline void delay_ns(uint32_t ns) {
-    uint32_t cycles = ns ; // was ns/8   //  8ns per cycle at 125 MHz
+    uint32_t cycles = ns / 8; // 8ns per cycle at 125 MHz
     for (volatile uint32_t i = 0; i < cycles; i++) {
         __asm volatile ("nop"); // Each nop takes one clock cycle
     }
 }
 
 void sendByte_CPULED(uint8_t byte) {
-  for (int i = 7; i >= 0; i--) {
-    if (byte & (1 << i)) {
-      gpio_put(CPULED_GPIO, 1);
-      delay_ns(T1H);
-      gpio_put(CPULED_GPIO, 0);
-      delay_ns(T1L);
-    } else {
-      gpio_put(CPULED_GPIO, 1);
-      delay_ns(T0H);
-      gpio_put(CPULED_GPIO, 0);
-      delay_ns(T0L);
+    for (int i = 7; i >= 0; i--) {
+        uint32_t t_high = (byte & (1 << i)) ? T1H : T0H;
+        uint32_t t_low = (byte & (1 << i)) ? T1L : T0L;
+        
+        gpio_put(CPULED_GPIO, 1);
+        delay_ns(t_high);
+        gpio_put(CPULED_GPIO, 0);
+        delay_ns(t_low);
     }
-  }
 }
 
 void CPULED(uint32_t color) {
-    sendByte_CPULED((color && 0x0000FF00) >> 8);  // Send green byte
-    sendByte_CPULED((color && 0x00FF0000) >>16);  // Send red byte
-    sendByte_CPULED((color && 0x000000FF) >> 0);  // Send blue byte
+    // Assuming GRB order for uint32_t
+    sendByte_CPULED((color >> 8) & 0xFF);  // Green
+    sendByte_CPULED((color >> 16) & 0xFF); // Red
+    sendByte_CPULED(color & 0xFF);         // Blue
     busy_wait_us(RESET_TIME); // Reset time after sending color
 }
 void CPULED(CRGB color) {
-    sendByte_CPULED((color && 0x00FF0000) >> 8);  // Send green byte
-    sendByte_CPULED((color && 0xFF000000) >>16);  // Send red byte
-    sendByte_CPULED((color && 0x0000FF00) >> 0);  // Send blue byte
+    // FastLED CRGB is usually GRB in memory on many controllers
+    sendByte_CPULED(color.g);  // Send green byte
+    sendByte_CPULED(color.r);  // Send red byte
+    sendByte_CPULED(color.b);  // Send blue byte
     busy_wait_us(RESET_TIME); // Reset time after sending color
 }
 void CPULED(uint8_t r, uint8_t g, uint8_t b) {
