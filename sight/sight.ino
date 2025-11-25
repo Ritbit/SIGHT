@@ -1339,10 +1339,9 @@ void SetConfigParameters(char *Data){
       // set Name-Idenitfier
       case 'n':
         // Check is Value is not bigger than size of LedConfig.identifier
-        if (sizeof(Value) <= IDENTIFIER_MAX_LENGTH ){
+        if (strlen(Value) < IDENTIFIER_MAX_LENGTH ){
           strncpy(LedConfig.identifier, Value, IDENTIFIER_MAX_LENGTH -1);
-          for (int i=sizeof(Value); i<IDENTIFIER_MAX_LENGTH; i++) 
-            LedConfig.identifier[i] = '\0'; // Ensure null-termination
+          LedConfig.identifier[IDENTIFIER_MAX_LENGTH - 1] = '\0'; // Ensure null-termination
           Serial.println();
           Serial.print("Controller Name (ID)   : " );
           Serial.println(LedConfig.identifier);
