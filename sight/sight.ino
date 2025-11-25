@@ -526,11 +526,14 @@ void handleSerialInput() {
     } 
     else 
     if (c == '\n' || c == '\r') {
-      inputBuffer[bufferIndex] = '\0'; // Null-terminate the string
-      Serial.println();
-      checkInput(inputBuffer);
-      Serial.print("> ");
+      // Only process if buffer has content (avoid double-processing \r\n pairs)
+      if (bufferIndex > 0 || inputBuffer[0] != '\0') {
+        inputBuffer[bufferIndex] = '\0'; // Null-terminate the string
+        checkInput(inputBuffer);
+        Serial.print("> ");
+      }
       bufferIndex = 0;
+      inputBuffer[0] = '\0'; // Clear buffer marker
     }
     else 
     if (c == 0x08 && bufferIndex > 0) { // Backspace
@@ -573,8 +576,11 @@ bool isPrintable(const char c) {
  */
 void checkInput(char input[MAX_INPUT_LEN]) {
   CPULED(0x00,0x00,0x80);
+  
+  // Move to new line after user input
+  Serial.println();
+  
   if (input[0] == 0) {
-    Serial.println("");
     return;
   }
 
@@ -904,7 +910,6 @@ void checkInput(char input[MAX_INPUT_LEN]) {
       // Set mass state, a digit for each group (48 max)
       case 'M':
         char ST;
-        Serial.println();
         if ( Data[0] == ':') {
           int GroupID=1;
           int totalChars = strlen(Data+1);
@@ -1342,7 +1347,6 @@ void SetConfigParameters(char *Data){
         if (strlen(Value) < IDENTIFIER_MAX_LENGTH ){
           strncpy(LedConfig.identifier, Value, IDENTIFIER_MAX_LENGTH -1);
           LedConfig.identifier[IDENTIFIER_MAX_LENGTH - 1] = '\0'; // Ensure null-termination
-          Serial.println();
           Serial.print("Controller Name (ID)   : " );
           Serial.println(LedConfig.identifier);
         } else {
@@ -1351,7 +1355,6 @@ void SetConfigParameters(char *Data){
         break;
       // set led per strip
       case 'l':
-        Serial.println();
         value_int=atoi(Value);
         if (value_int >= NUM_LEDS_PER_STRIP_MIN and value_int <= NUM_LEDS_PER_STRIP_MAX){
           Serial.print("LEDs per shelf       : " );
@@ -1368,7 +1371,6 @@ void SetConfigParameters(char *Data){
         break;
       // set groups per shelf
       case 't':
-        Serial.println();
         value_int=atoi(Value);
         if (value_int>=1 and value_int <= NUM_GROUPS_PER_STRIP_MAX) {
           // Check if total groups would exceed MAX_GROUPS
@@ -1396,7 +1398,6 @@ void SetConfigParameters(char *Data){
         break;
       // set number of shelves
       case 's':
-        Serial.println();
         value_int=atoi(Value);
         if (value_int>=1 and value_int <= NUM_STRIPS_MAX){
           // Check if total groups would exceed MAX_GROUPS
@@ -1425,7 +1426,6 @@ void SetConfigParameters(char *Data){
         break;
       // set spacer width
       case 'w':
-        Serial.println();
         value_int=atoi(Value);
         if (value_int>=0 and value_int <= SPACER_WIDTH_MAX){
           Serial.print("Spacer width         : " );
@@ -1439,7 +1439,6 @@ void SetConfigParameters(char *Data){
         }
         break;
       case 'o':
-        Serial.println();
         value_int=atoi(Value);
         if (value_int>=0 and value_int <= START_OFFSET_MAX){
           Serial.print("Start offset         : " );
@@ -1454,7 +1453,6 @@ void SetConfigParameters(char *Data){
         break;
       // Set animate interval
       case 'a':
-        Serial.println();
         value_int=atoi(Value);
         if (value_int >= ANIMATE_INTERVAL_MIN and value_int <= ANIMATE_INTERVAL_MAX){
           Serial.print("Animation interval   : " );
@@ -1473,7 +1471,6 @@ void SetConfigParameters(char *Data){
         break;
       // Set blink interval
       case 'b':
-        Serial.println();
         value_int=atoi(Value);
         if (value_int >= BLINK_INTERVAL_MIN and value_int <= BLINK_INTERVAL_MAX){
           if (value_int > LedConfig.updateinterval) {
@@ -1499,7 +1496,6 @@ void SetConfigParameters(char *Data){
 
       // Set update interval
       case 'u':
-        Serial.println();
         value_int=atoi(Value);
         if (value_int >= UPDATE_INTERVAL_MIN and value_int <= UPDATE_INTERVAL_MAX){
           if (value_int < LedConfig.blinkinterval) {
@@ -1533,7 +1529,6 @@ void SetConfigParameters(char *Data){
 
       // Set Brightness Inetensity
       case 'i':
-        Serial.println();
         value_int=atoi(Value);
         if (value_int >= BRIGHTNESS_MIN and value_int <= BRIGHTNESS_MAX){
           Serial.print("Brightness intensity   : " );
@@ -1557,7 +1552,6 @@ void SetConfigParameters(char *Data){
       
       // Set fade factor
       case 'f':
-        Serial.println();
         value_int=atoi(Value);
         if (value_int>=0 and value_int <= 255){
           Serial.print("Fading factor          : " );
@@ -1571,7 +1565,6 @@ void SetConfigParameters(char *Data){
 
       // Set shelf-order
       case 'z':
-        Serial.println();
         if (*Value == 'N' or *Value == 'n' or *Value == 'F' or *Value == 'f') {
           LedConfig.altShelfOrder = false;
           Serial.print("Alt. Shelf order     : False");
@@ -1586,7 +1579,6 @@ void SetConfigParameters(char *Data){
       
       // Toggle startup animation
       case 'g':
-        Serial.println();
         if (*Value == 'N' or *Value == 'n' or *Value == 'F' or *Value == 'f' or *Value == '0') {
           LedConfig.startupAnimation = false;
           Serial.println("Startup animation    : Disabled");
@@ -1600,7 +1592,6 @@ void SetConfigParameters(char *Data){
       
       // Toggle command echo
       case 'e':
-        Serial.println();
         if (*Value == 'N' or *Value == 'n' or *Value == 'F' or *Value == 'f' or *Value == '0') {
           LedConfig.commandEcho = false;
           Serial.println("Command echo         : Disabled");
@@ -1628,7 +1619,6 @@ void SetConfigParameters(char *Data){
         break;
       // set defaults
       case 'd':
-        Serial.println();
         resetToDefaults();
         Serial.println("Configuration reset to defaults\n");
         FastLED.clearData();
@@ -1697,7 +1687,6 @@ void setLedStripGPIO(char *Value) {
 
 void setLedStateColor(char *Value) {
   char buffer[10];
-  Serial.println();
   if (Value[1] == ':') {
     int state = Value[0] - '0';
     if (state > 0 && state <= 9) {
