@@ -100,8 +100,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // *** IMPORTANT: Set this to match your LED strip type ***
 // Uncomment ONE of these lines:
-#define USE_RGB_STRIPS    // For WS2812B RGB strips (3 bytes per LED)
-// #define USE_RGBW_STRIPS  // For WS2813B-RGBW, SK6812 RGBW strips (4 bytes per LED)
+// #define USE_RGB_STRIPS    // For WS2812B RGB strips (3 bytes per LED)
+#define USE_RGBW_STRIPS  // For WS2813B-RGBW, SK6812 RGBW strips (4 bytes per LED)
 
 // Auto-configure based on strip type
 #if defined(USE_RGB_STRIPS) && defined(USE_RGBW_STRIPS)
@@ -1128,10 +1128,12 @@ void SetLEDGroup(uint8_t group, uint8_t state, uint8_t pct) {
   GroupWidth = (LedConfig.numLedsPerStrip / LedConfig.numGroupsPerStrip) - LedConfig.spacerWidth;
   
   // Clear entire group first to prevent color overlap when state/percentage changes
-  int fullGroupWidth = (LedConfig.numLedsPerStrip / LedConfig.numGroupsPerStrip) - LedConfig.spacerWidth;
-  for(int i=0; i<fullGroupWidth; i++) {
-    leds[stripIndex][startLEDIndex+i] = CRGB::Black;
-    ZERO_W(leds[stripIndex][startLEDIndex+i]);
+  if (pattern < 8) {
+    int fullGroupWidth = (LedConfig.numLedsPerStrip / LedConfig.numGroupsPerStrip) - LedConfig.spacerWidth;
+    for(int i=0; i<fullGroupWidth; i++) {
+      leds[stripIndex][startLEDIndex+i] = CRGB::Black;
+      ZERO_W(leds[stripIndex][startLEDIndex+i]);
+    }
   }
 
   // for percentage
@@ -1798,7 +1800,7 @@ void ShowConfiguration() {
   Serial.print("LEDs per shelf       : ");
   Serial.println(LedConfig.numLedsPerStrip); 
 
-  Serial.print("Groups per shelf  : ");
+  Serial.print("Groups per shelf     : ");
   Serial.println(LedConfig.numGroupsPerStrip); 
 
   Serial.print("Amount of shelves    : ");
