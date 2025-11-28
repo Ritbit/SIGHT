@@ -2096,46 +2096,53 @@ void StartupLoop() {
 // BitBang code for CPU led (can't use FastLED as all 8 PIO chanels are used for the ledstrips)
 //
 
-// WS2812B CPULED timing
-#define T1H  7
-#define T1L  1
-#define T0H  1
-#define T0L  7
-#define RESET_TIME 100
+// WS2812B CPULED timing (125 MHz = 8ns per cycle)
+// T0H: 400ns = 50 cycles, T0L: 850ns = 106 cycles
+// T1H: 800ns = 100 cycles, T1L: 450ns = 56 cycles
+// Subtract ~8 cycles for gpio_put() overhead
+#define T1H  92   // 800ns (100 cycles - 8 overhead)
+#define T1L  48   // 450ns (56 cycles - 8 overhead)
+#define T0H  42   // 400ns (50 cycles - 8 overhead)
+#define T0L  98   // 850ns (106 cycles - 8 overhead)
+#define RESET_TIME 60  // >50us reset time
 
-inline void delay_ns(uint32_t ns) {
-    uint32_t cycles = ns ; // was ns/8   //  8ns per cycle at 125 MHz
-    for (volatile uint32_t i = 0; i < cycles; i++) {
-        __asm volatile ("nop"); // Each nop takes one clock cycle
+inline void delay_cycles(uint32_t cycles) {
+    // Simple cycle delay - each iteration is ~4 cycles
+    while (cycles >= 4) {
+        __asm volatile ("nop");
+        cycles -= 4;
     }
 }
 
 void sendByte_CPULED(uint8_t byte) {
+  // Disable interrupts for precise timing
+  noInterrupts();
   for (int i = 7; i >= 0; i--) {
     if (byte & (1 << i)) {
       gpio_put(CPULED_GPIO, 1);
-      delay_ns(T1H);
+      delay_cycles(T1H);
       gpio_put(CPULED_GPIO, 0);
-      delay_ns(T1L);
+      delay_cycles(T1L);
     } else {
       gpio_put(CPULED_GPIO, 1);
-      delay_ns(T0H);
+      delay_cycles(T0H);
       gpio_put(CPULED_GPIO, 0);
-      delay_ns(T0L);
+      delay_cycles(T0L);
     }
   }
+  interrupts();
 }
 
 void CPULED(uint32_t color) {
-    sendByte_CPULED((color && 0x0000FF00) >> 8);  // Send green byte
-    sendByte_CPULED((color && 0x00FF0000) >>16);  // Send red byte
-    sendByte_CPULED((color && 0x000000FF) >> 0);  // Send blue byte
+    sendByte_CPULED((color & 0x0000FF00) >> 8);  // Send green byte
+    sendByte_CPULED((color & 0x00FF0000) >> 16);  // Send red byte
+    sendByte_CPULED((color & 0x000000FF));        // Send blue byte
     busy_wait_us(RESET_TIME); // Reset time after sending color
 }
 void CPULED(CRGB color) {
-    sendByte_CPULED((color && 0x00FF0000) >> 8);  // Send green byte
-    sendByte_CPULED((color && 0xFF000000) >>16);  // Send red byte
-    sendByte_CPULED((color && 0x0000FF00) >> 0);  // Send blue byte
+    sendByte_CPULED(color.g);  // Send green byte
+    sendByte_CPULED(color.r);  // Send red byte
+    sendByte_CPULED(color.b);  // Send blue byte
     busy_wait_us(RESET_TIME); // Reset time after sending color
 }
 void CPULED(uint8_t r, uint8_t g, uint8_t b) {
