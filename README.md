@@ -24,8 +24,8 @@ Due to the redundant data lines, I recommend the 5V based WS-2813 or the 12V bas
 For 12V strips you have to change the capacitor on the driver board for a 16V model. (A replacement schematics+PCB suitable for both will be added soon).
 
 **Important:** Configure your LED strip type in the firmware by uncommenting the appropriate define:
-- `#define USE_RGB_STRIPS` for WS2812B (3 bytes per LED)
-- `#define USE_RGBW_STRIPS` for WS2813B-RGBW, SK6812 (4 bytes per LED)
+- `#define USE_RGB_LEDS` for WS2812B (3 bytes per LED)
+- `#define USE_RGBW_LEDS` for WS2813B-RGBW, SK6812 (4 bytes per LED)
 
 ![LEdStrip models](images/ledstrip-models.png?raw=true "LedStrip models")
 
@@ -33,7 +33,7 @@ For more details about LED strips see [user-guide-for-ws2812b-ws2811-sk6812-and-
 
 
 ## PCB's
-There are ready for use PCB's in the PCB foler, you can import them into [EasyEDA](https://easyeda.com/) and from there send in the oder to [JLCPCB](https://jlcpcb.com/) to the the ready for use PCB.s
+There are ready for use PCB's in the PCB folder, you can import them into [EasyEDA](https://easyeda.com/) and from there send in the order to [JLCPCB](https://jlcpcb.com/) to get the ready for use PCBs.
 
 
 ## Compile
@@ -53,6 +53,40 @@ Please make sure to install the libraries for:
 **Important:** When compiling, make sure to reserve a little space for LittleFS (8-64KB) in the Arduino IDE board settings to enable configuration storage.
 
 
+## Quick Start
+
+Get your SIGHT controller running in just 4 simple steps:
+
+1. **Connect Hardware** 
+   - Plug SIGHT into your USB port
+   - Connect LED strips to the configured GPIO pins
+   - Power on the system
+
+2. **Open Serial Monitor**
+   - Open Arduino IDE Serial Monitor
+   - Set baud rate to **115200**
+   - Wait for startup sequence to complete
+
+3. **Basic Commands**
+   - Type `H` and press Enter to see help
+   - Try `T:1:1` to set first group to green
+   - Try `X` to clear all groups
+   - Try `Q` for quick status summary
+
+4. **Save Configuration**
+   - Type `S` to save your settings
+   - Configuration will auto-load on next boot
+
+**Example First Session:**
+```
+> H              # Show help
+> T:1:1          # Set group 1 to green (state 1)
+> T:2:2          # Set group 2 to orange (state 2) 
+> Q              # Check status
+> S              # Save configuration
+```
+
+
 
 
 ## Usage: 
@@ -63,7 +97,7 @@ The startup sequence output will look as follows:
 ```
 -=[ Shelf Indicators for Guided Handling Tasks ]=-
 
-SIGHT Version  : 1.8
+SIGHT Version  : 1.9
 MicroController : WAVESHARE_RP2040_ZERO
 MCU-Serial      : E6632C85931E832C
 
@@ -73,7 +107,7 @@ LittleFS mounted successfully.
 Configuration loaded successfully.
 Initialization done..,
 
-Identifier           : SIGHT v1.8
+Identifier           : SIGHT v1.9
 LEDs per shelf       : 57
 Groups per shelf     : 6
 Amount of shelves    : 8
@@ -139,9 +173,9 @@ G           - Get detailed state of all groups
 ### Configuration Commands (C prefix)
 ```
 Cn:name     - Set controller name/identifier (max 16 chars)
-Cl:n        - Set LEDs per strip (6-300)
-Cs:n        - Set number of strips/shelves (1-8)
-Ct:n        - Set groups per strip (1-16)
+Cl:n        - Set LEDs per strip (6-600)
+Cs:n        - Set number of strips/channels (1-8)
+Ct:n        - Set groups per strip (1-100)
 Cw:n        - Set spacer width (0-20)
 Co:n        - Set start offset (0-9)
 Ca:n        - Set animate interval (10-1000 ms)
@@ -149,6 +183,7 @@ Cb:n        - Set blink interval (50-3000 ms)
 Cu:n        - Set update interval (5-500 ms)
 Ci:n        - Set brightness (10-255)
 Cf:n        - Set fading factor
+Cf2:n       - Set 2-step fading factor
 Cz:Y/N      - Alternative shelf ordering
 Cg:Y/N      - Enable/disable startup animation
 Ce:Y/N      - Enable/disable command echo
@@ -209,9 +244,23 @@ The hardcoded animations are:
 
 All settings for name, timing, colors and patterns can be saved to flash, and will automatically be loaded upon boot.
 
+## Version 1.9 Features
+
+Version 1.9 builds upon the solid foundation of v1.8 with additional enhancements:
+
+- **Enhanced LED capacity**: Support for up to 600 LEDs per channel and 100 groups per channel
+- **Dual fading system**: Separate fading factors for regular and 2-step animations
+- **Improved terminology**: Changed "shelf/strip/output" to "channel" for better clarity
+- **Code quality improvements**: Professional variable naming (camelCase conventions)
+- **Enhanced documentation**: Comprehensive comments and better code organization
+- **Improved error messages**: More specific and helpful error reporting
+- **Magic number elimination**: All hardcoded values replaced with named constants
+- **Buffer size increases**: Input buffer expanded to 512 chars for larger configurations
+- **Configuration identifier updates**: More robust config validation with version-specific IDs
+
 ## Version 1.8 Features
 
-Version 1.8 includes significant improvements:
+Version 1.8 included significant improvements:
 
 - **Comprehensive config validation** on load and runtime
 - **Watchdog timer** for system stability (8-second timeout with auto-reboot)
@@ -228,3 +277,177 @@ Version 1.8 includes significant improvements:
 - **Function documentation** and const correctness throughout
 - **Fixed group LED clearing** to prevent color overlap
 - **RGBW support** for SK6812 and WS2813B-RGBW strips
+
+## Troubleshooting
+
+### Common Issues and Solutions
+
+**LED Strips Not Working**
+- **Problem**: No LEDs light up when sending commands
+- **Solutions**: 
+  - Check GPIO pin configuration with `D` command
+  - Verify LED strip type (RGB vs RGBW) in firmware
+  - Ensure power supply is adequate (5V/12V depending on strip type)
+  - Check data line connections and polarity
+
+**Configuration Not Saving**
+- **Problem**: Settings lost after power cycle
+- **Solutions**:
+  - Ensure LittleFS space is reserved (8-64KB) in Arduino IDE
+  - Check flash memory integrity with `I` command
+  - Try `S` command to manually save configuration
+  - Use `Se` to export backup before making changes
+
+**LED Strips Flickering or Random Colors**
+- **Problem**: LEDs show incorrect colors or flicker
+- **Solutions**:
+  - Check power supply capacity (under-voltage causes issues)
+  - Verify data line length (keep < 3m without signal booster)
+  - Add capacitor (1000µF) near strip power input
+  - Check for electromagnetic interference
+
+**Serial Communication Issues**
+- **Problem**: No response to commands
+- **Solutions**:
+  - Verify baud rate is 115200
+  - Check USB cable and port
+  - Ensure line endings set to "Newline" in serial monitor
+  - Try `R` command to reboot controller
+
+**Memory or Performance Issues**
+- **Problem**: Slow response or crashes
+- **Solutions**:
+  - Check system info with `I` command for memory usage
+  - Reduce number of LEDs/groups if approaching limits
+  - Ensure watchdog timer isn't triggering (8-second timeout)
+  - Check for command buffer overflow with long commands
+
+### Error Messages Reference
+
+| Error Message | Cause | Solution |
+|---------------|-------|----------|
+| `Command 'X' unknown` | Invalid command | Use `H` for valid commands |
+| `Invalid state` | State not 0-9 | Use states 0-9 only |
+| `Group ID out of range` | Invalid group number | Use groups 1-MAX_GROUPS |
+| `GPIO pin already used` | Duplicate pin assignment | Choose unused GPIO pin |
+| `Configuration load failed` | Corrupted config | Use `Cd` to reset defaults |
+
+### Getting Help
+
+If you encounter issues not covered here:
+1. Use `H` command for built-in help
+2. Use `I` command to check system status
+3. Export configuration with `Se` for analysis
+4. Check GitHub issues for known problems
+5. Contact support with system info and error details
+
+## Application Examples
+
+### Example 1: Warehouse Order Picking
+**Setup**: 4 zones, 8 groups each, 57 LEDs per group
+```
+Cs:8                    # 8 channels/zones
+Ct:8                    # 8 groups per zone
+Cl:57                   # 57 LEDs per group
+Cw:1                    # 1 LED spacer between groups
+```
+**Command Sequence**:
+```
+> T:1:1                 # Zone 1 - Item ready (green)
+> T:2:2                 # Zone 2 - In progress (orange)
+> T:3:3                 # Zone 3 - Priority (red)
+> T:4:1                 # Zone 4 - Complete (green)
+> S                     # Save configuration
+```
+
+### Example 2: Assembly Line Progress
+**Setup**: 6 stations, progress indicators
+```
+Cs:6                    # 6 stations
+Ct:4                    # 4 groups per station
+Cl:30                   # 30 LEDs per group
+Cp:2:10                 # Set state 2 to chase pattern
+```
+**Command Sequence**:
+```
+> P01:1:025             # Station 1, state 1, 25% complete
+> P02:1:050             # Station 2, state 1, 50% complete
+> P03:1:075             # Station 3, state 1, 75% complete
+> P04:1:100             # Station 4, state 1, 100% complete
+```
+
+### Example 3: Storage Facility Status
+**Setup**: 12 aisles, status lighting
+```
+Cs:8                    # 8 channels (multiple aisles per channel)
+Ct:12                   # 12 groups (aisles)
+Cl:20                   # 20 LEDs per aisle
+Cc:1:00FF00             # Green for available
+Cc:2:FFA500             # Orange for partial
+Cc:3:FF0000             # Red for full
+```
+**Command Sequence**:
+```
+> M:132131213121        # Set aisle status pattern
+> Q                     # Quick status summary
+> G                     # Detailed aisle status
+```
+
+### Example 4: Multi-Stage Process Control
+**Setup**: 5 process stages with animations
+```
+Cs:5                    # 5 stages
+Ct:6                    # 6 indicators per stage
+Cl:25                   # 25 LEDs per indicator
+Cp:1:8                  # State 1: chase up
+Cp:2:10                 # State 2: chase up/down
+Cp:3:1                  # State 3: blinking
+Cb:500                  # 500ms blink interval
+```
+**Command Sequence**:
+```
+> A:0                   # Clear all stages
+> T:1:1                 # Start stage 1
+> T:2:2                 # Start stage 2
+> T:3:3                 # Start stage 3
+> X                     # Emergency stop/clear
+```
+
+### Example 5: KPI Dashboard Display
+**Setup**: Visual performance indicators
+```
+Cs:8                    # 8 KPI categories
+Ct:4                    # 4 performance levels per KPI
+Cl:40                   # 40 LEDs for visual impact
+Cf:24                   # Smooth fading
+Ca:200                 # 200ms animation speed
+```
+**Color Mapping**:
+```
+> Cc:1:00FF00           # Excellent - Green
+> Cc:2:FFFF00           # Good - Yellow
+> Cc:3:FFA500           # Warning - Orange
+> Cc:4:FF0000           # Critical - Red
+```
+**Real-time Updates**:
+```
+> T:1:1                 # KPI 1: Excellent
+> T:2:2                 # KPI 2: Good
+> T:3:3                 # KPI 3: Warning
+> T:4:4                 # KPI 4: Critical
+```
+
+### Configuration Backup Examples
+
+**Export Current Setup**:
+```
+> Se                    # Export configuration as hex
+OUTPUT: 53494748542D434... (copy this string)
+```
+
+**Import Saved Setup**:
+```
+> Li:53494748542D434...  # Paste the hex string
+Configuration imported successfully
+> S                     # Save to flash
+```
