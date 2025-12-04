@@ -605,7 +605,7 @@ void setBlinkState() {
  * Advances all animation step counters for smooth animation transitions
  */
 void animateStep() {
-  // just count up here, the clipping happens in the UpdateLED function as the lenght varies on the effect and group-size.
+  // just count up here, the clipping happens in the UpdateLED function as the length varies on the effect and group-size.
   for (int i = 0; i < sizeof(animate_Step); i++) {
     animate_Step[i]++;
   }
@@ -2276,7 +2276,7 @@ void setConfigParameters(char *Data) {
           Serial.println("Invalid Value, use Y/N or 1/0");
         }
         break;
-      // Set color-patern (colorblind assist)
+      // Set color-pattern (colorblind assist)
       case 'p':
         setLedstatePattern(Value);
         FastLED.clearData();
@@ -2630,7 +2630,7 @@ bool loadConfiguration() {
   buffer = readFile(CONFIG_FILENAME);
   if (buffer != 0) {
 
-    // Calulate sizes to separate struct and checksum in buffer
+    // Calculate sizes to separate struct and checksum in buffer
     int structSize=sizeof(LedData);
     int totalSize = structSize + 32;  // 32 for the saved binary checksum
 
@@ -2648,7 +2648,7 @@ bool loadConfiguration() {
     // Compare the loaded checksum with the recalculated checksum
     if (memcmp(loadedChecksum, calculatedChecksum, 32) == 0) {
       // Checksums match, proceed to load LedConfig
-      // DeSeriallize buffer into LedData Struct
+      // DeSerialize buffer into LedData Struct
       memcpy(&LedConfig, buffer, structSize);
       delete[] buffer;  // Free memory
 
@@ -2735,7 +2735,7 @@ bool loadConfiguration() {
  */
 bool saveConfiguration() {
   CPULED(0x00,0x00,0x80);
-  // Seriallize LedData Struct into char-array so we can save it
+  // Serialize LedData Struct into char-array so we can save it
   char buffer[sizeof(LedData)];
   SHA256 sha256;
   memcpy(buffer, &LedConfig, sizeof(LedData));
