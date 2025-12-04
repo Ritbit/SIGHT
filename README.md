@@ -65,13 +65,13 @@ Get your SIGHT controller running in just 4 simple steps:
 2. **Open Serial Monitor**
    - Open Arduino IDE Serial Monitor
    - Set baud rate to **115200**
-   - Wait for startup sequence to complete
+   - Watch the blue startup pulse until the serial prompt appears
 
 3. **Basic Commands**
    - Type `H` and press Enter to see help
    - Try `T:1:1` to set first group to green
    - Try `X` to clear all groups
-   - Try `Q` for quick status summary
+   - Use `I` for the combined info/status page
 
 4. **Save Configuration**
    - Type `S` to save your settings
@@ -90,7 +90,7 @@ Get your SIGHT controller running in just 4 simple steps:
 
 
 ## Usage: 
-Upon connection, the controller will undergo a startup sequence. When the serial port is inactive (not opened in any application), the onboard LED will pulse red slowly, and all eight outputs will sequentially pulse every 200 ms with a 1-second interval for testing purposes. Once the serial port is opened, a welcome animation will play on all LED strips, followed by loading configuration settings from flash memory if available.
+Upon connection, the controller performs a startup sequence while the CPU status LED softly pulses blue and each channel performs a GPIO pin test. The watchdog only arms after USB serial is opened, preventing unwanted resets while waiting for a host. Once the serial port is opened, the LED switches to a breathing green "normal" glow, a welcome animation plays on all LED strips, and configuration settings load from flash if available. Any error state forces the CPU LED to blink red for quick diagnostics.
 
 The startup sequence output will look as follows:
 
@@ -147,50 +147,46 @@ After the initialization, a command prompt (>) will appear, indicating that the 
 
 ### System Commands
 ```
-V           - Show version information
-H or ?      - Show help
-D           - Display current configuration
-I           - Show system info (RAM/Flash usage, uptime, statistics)
-S           - Save configuration to flash
-Se          - Save/Export configuration as hex (backup)
-L           - Load configuration from flash
-Li:CONFIG:  - Load/Import configuration from hex (restore)
-R           - Reboot controller
-W           - Shows welcome/startup loop
+V             - Show version information
+H or ?        - Show help
+D             - Display current configuration
+I             - Show system info (RAM/Flash usage, uptime, statistics)
+S             - Save configuration to flash
+Se            - Save/Export configuration as hex (backup)
+L             - Load configuration from flash
+Li:CONFIG:    - Load/Import configuration from hex (restore)
+R             - Reboot controller
+W             - Shows welcome/startup loop
 ```
 
 ### Group Control Commands
 ```
-T:n:s       - Set group n to state s (0-9)
-M:ssssss    - Set multiple groups at once by providing a list of states (e.g. M:12345)
-A:s         - Set all groups to state s (0-9)
-Pgg:s:ppp   - Set group state (gg=group 1-48, s=state 0-9, ppp=percent 0-100)
-X           - Clear all groups (set to state 0)
-Q           - Quick status summary (active groups per state)
-G           - Get detailed state of all groups
+T:n:s         - Set group n to state s (0-9)
+M:ssssss      - Set multiple groups at once by providing a list of states (e.g. M:12345)
+A:s           - Set all groups to state s (0-9)
+Pgg:s:ppp     - Set group state progress (gg=group 1-48, s=state 0-9, ppp=percent 0-100)
+X             - Clear all groups (set to state 0)
 ```
 
 ### Configuration Commands (C prefix)
 ```
-Cn:name     - Set controller name/identifier (max 16 chars)
-Cl:n        - Set LEDs per strip (6-600)
-Cs:n        - Set number of strips/channels (1-8)
-Ct:n        - Set groups per strip (1-100)
-Cw:n        - Set spacer width (0-20)
-Co:n        - Set start offset (0-9)
-Ca:n        - Set animate interval (10-1000 ms)
-Cb:n        - Set blink interval (50-3000 ms)
-Cu:n        - Set update interval (5-500 ms)
-Ci:n        - Set brightness (10-255)
-Cf:n        - Set fading factor
-Cf2:n       - Set 2-step fading factor
-Cz:Y/N      - Alternative shelf ordering
-Cg:Y/N      - Enable/disable startup animation
-Ce:Y/N      - Enable/disable command echo
-Cx:p1,p2... - Set GPIO pins for strips
-Cp:s:n      - Set pattern for state s (0-9)
-Cc:s:RRGGBB - Set color for state s (hex)
-Cd          - Reset to default configuration
+Cn:name       - Set controller name/identifier (max 16 chars)
+Cl:n          - Set LEDs per channel (6-600)
+Ct:n          - Set groups per channel (1-100)
+Cs:n          - Set active channels (1-8)
+Cw:n          - Set spacer width (0-20)
+Co:n          - Set start offset (0-9)
+Cb:n          - Set blink interval (50-3000 ms)
+Cu:n          - Set update interval (5-500 ms)
+Ca:n          - Set animate interval (10-1000 ms)
+Ci:n          - Set brightness intensity (10-255)
+Cf:a:i:o      - Configure fading animation + two-step fade-in/out percentages (0-255 each)
+Cc:s:RRGGBB   - Set color for state s (hex)
+Cp:s:pattern  - Set pattern for state s (0-9, pattern 0-12)
+Cz:order      - Set channel order (N=12345678 or custom sequence)
+C4:yes/no     - Toggle RGBW mode
+Cx:ch:pin     - Set GPIO pin per channel
+Cd            - Reset to default configuration
 ```
 
 ## Command Examples
@@ -208,8 +204,7 @@ Cd          - Reset to default configuration
 - Clear all: `X`
 
 **Check status:**
-- Quick summary: `Q`
-- Detailed group states: `G`
+- Combined info (uptime, RAM, group states): `I`
 
 **Configuration backup/restore:**
 - Export config: `Se`
@@ -248,6 +243,7 @@ All settings for name, timing, colors and patterns can be saved to flash, and wi
 
 Version 1.9 builds upon the solid foundation of v1.8 with additional enhancements:
 
+
 - **Enhanced LED capacity**: Support for up to 600 LEDs per channel and 100 groups per channel
 - **Dual fading system**: Separate fading factors for regular and 2-step animations
 - **Improved terminology**: Changed "shelf/strip/output" to "channel" for better clarity
@@ -257,6 +253,12 @@ Version 1.9 builds upon the solid foundation of v1.8 with additional enhancement
 - **Magic number elimination**: All hardcoded values replaced with named constants
 - **Buffer size increases**: Input buffer expanded to 512 chars for larger configurations
 - **Configuration identifier updates**: More robust config validation with version-specific IDs
+- **Interactive line editor** with history, cursor movement, insert/overwrite modes, and clean redraw handling
+- **Two-step fading improvements**: Percent-based fade-in/out timing via `Cf:<anim>:<fade-in>:<fade-out>` plus partial-fill friendly logic
+- **CPU status LED states**: Blue pulsing at startup, green breathing while running, red blinking on errors, all at safe brightness
+- **Improved flashing/partial fills** so percentage commands keep pattern behavior intact
+- **Unified help and README** with auto-synchronized limits derived from firmware defines
+- **Expanded documentation & code style** cleanups across the project
 
 ## Version 1.8 Features
 

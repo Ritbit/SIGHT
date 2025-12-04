@@ -5,19 +5,17 @@
  * Original code by Jim Bumgardner (http://krazydad.com).
  * Modified by David Madison (http://partsnotincluded.com).
  * Extended by Christoph Wempe
- * 
+ * Extended again by Bas van Ritbergen
 */
 
 #ifndef FastLED_RGBW_h
 #define FastLED_RGBW_h
 
 
-/// scale four one byte values by a fith one, which is treated as
-///         the numerator of a fraction whose demominator is 256
-///         In other words, it computes r,g,b,w * (scale / 256)
-///
-///         THIS FUNCTION ALWAYS MODIFIES ITS ARGUMENTS IN PLACE
-
+/// Scales a four-channel RGBW pixel in-place by an 8-bit fraction.
+/// @param r,g,b,w Individual channel references updated with the scaled values
+/// @param scale Fractional brightness represented as scale/256
+/// NOTE: This operation mutates the provided channel values directly.
 LIB8STATIC void nscale8x4( uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& w, fract8 scale) {
 #if SCALE8_C == 1
 #if (FASTLED_SCALE8_FIXED == 1)
@@ -43,6 +41,8 @@ LIB8STATIC void nscale8x4( uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& w, fract
 #endif
 }
 
+/// Convenience struct mimicking CRGB but with an additional white channel.
+/// Provides a subset of the FastLED CRGB helpers adapted for RGBW pixels.
 struct CRGBW  {
 	union {
 		struct {
@@ -68,6 +68,7 @@ struct CRGBW  {
 
 	CRGBW(){}
 
+	/// Construct from explicit channel values.
 	CRGBW(uint8_t rd, uint8_t grn, uint8_t blu, uint8_t wht){
 		r = rd;
 		g = grn;
@@ -75,6 +76,7 @@ struct CRGBW  {
 		w = wht;
 	}
 
+	/// Assign from a CRGB, zeroing the white component for compatibility.
 	inline void operator = (const CRGB c) __attribute__((always_inline)){
 		this->r = c.r;
 		this->g = c.g;
@@ -110,12 +112,14 @@ struct CRGBW  {
     return *this;
   }
 
+  /// Fades the pixel toward black by the provided factor.
   inline CRGBW& fadeLightBy (uint8_t fadefactor ) {
     uint8_t inv_fadefactor;
     nscale8x4( r, g, b, w,  255 - fadefactor);
     return *this;
   }
 
+  /// Writes an RGBW color into a CRGB buffer treated as 4-channel data.
   void RGBW_color( CRGB *leds  ,int led, int R, int G, int B, int W) {
       int ind;
       ind=led*4;
@@ -126,28 +130,33 @@ struct CRGBW  {
       leds[0][ind+3]=W;
   }
 
+  /// Calculates how many CRGB slots are needed to emulate RGBW LEDs.
   inline uint16_t getRGBWsize(uint16_t nleds){
     uint16_t nbytes = nleds * 4;
     if(nbytes % 3 > 0) return nbytes / 3 + 1;
     else return nbytes / 3;
   }
 
+  /// Fills the CRGBW array with a solid RGB color.
   void fill_solid( struct CRGBW * leds, int numToFill, CRGB color) {
     for( int i = 0; i < numToFill; i++) {
       leds[i] = color;
     }
   }
 
+  /// Applies nscale8 across a CRGBW array.
   void nscale8( CRGBW* leds, uint16_t num_leds, uint8_t scale) {
     for( uint16_t i = 0; i < num_leds; i++) {
         leds[i].nscale8( scale);
     }
   }
 
+  /// Fades an entire CRGBW array toward black.
   void fadeToBlackBy( CRGBW* leds, uint16_t num_leds, uint8_t fadeBy) {
       nscale8( leds, num_leds, 255 - fadeBy);
   }
 
+  /// Generates a rainbow gradient within a CRGBW array.
   void fill_rainbow( struct CRGBW * pFirstLED, int numToFill,
                     uint8_t initialhue,
                     uint8_t deltahue ) {
