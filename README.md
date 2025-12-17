@@ -259,7 +259,6 @@ Version 1.9 builds upon the solid foundation of v1.8 with additional enhancement
 - **Improved flashing/partial fills** so percentage commands keep pattern behavior intact
 - **Unified help and README** with auto-synchronized limits derived from firmware defines
 - **Expanded documentation & code style** cleanups across the project
-- **Console wrapper class** for Unix-style LF-only line endings (improved compatibility with Unix/Linux tools)
 
 ## Version 1.8 Features
 
@@ -314,7 +313,7 @@ Version 1.8 included significant improvements:
 - **Solutions**:
   - Verify baud rate is 115200
   - Check USB cable and port
-  - Line endings: Controller outputs LF-only (Unix-style), accepts both CR+LF and LF
+  - Ensure line endings set to "Newline" in serial monitor
   - Try `R` command to reboot controller
 
 **Memory or Performance Issues**

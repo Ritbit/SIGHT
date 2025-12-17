@@ -15,7 +15,6 @@ Description : LED strip controller with animations, RGBW support, and comprehens
               - Added CPU status LED states (startup blue, normal green, error red) with brightness control
               - Implemented percent-based two-step fade-in/fade-out with configurable Cf:<anim>:<in>:<out>
               - Improved LED group handling for partial fills and ensured flashing works with percentages
-              - Added Console wrapper class for Unix-style LF-only line endings (replaces Serial)
 
               v1.8 improvements:
               - Added comprehensive config validation on load and runtime
@@ -235,25 +234,6 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include <MicrocontrollerID.h>  // Figure MCU type/serial
 char mcuId[41];
 
-// Console class: Serial wrapper with Unix-style LF-only line endings
-class ConsoleClass : public Print {
-public:
-  void begin(unsigned long baud) { Serial.begin(baud); }
-  int available() { return Serial.available(); }
-  int read() { return Serial.read(); }
-  int peek() { return Serial.peek(); }
-  void flush() { Serial.flush(); }
-  size_t write(uint8_t c) override { return Serial.write(c); }
-  size_t write(const uint8_t *buffer, size_t size) override { return Serial.write(buffer, size); }
-  
-  // Override println to use LF only (no CR)
-  size_t println() { return write('\n'); }
-  template<typename T> size_t println(T value) { size_t n = print(value); n += write('\n'); return n; }
-  
-  // Explicit operator bool for while(!Console) usage
-  explicit operator bool() { return Serial; }
-} Console;
-
 // Declare LedStrip control arrays
 #if LED_TYPE == 4
   // RGBW strips: Use CRGBW arrays (4 bytes per LED)
@@ -374,7 +354,7 @@ uint8_t animate_Step[16]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 void setup() {
 
   // Setup USB-serial port
-  Console.begin(115200);
+  Serial.begin(115200);
 
   // Initialize status led, set to blue to show we are waiting for input
   // We have to disable theCPU led as Fastled can only drive 8 led channels ! (due to 8 PIO registers)
@@ -383,14 +363,16 @@ void setup() {
   gpio_put(CPULED_GPIO, 0);
   CPULED(0x00,0x00,0x00);
 
-#ifdef POWERON_GPIOTEST && POWERON_GPIOTEST == true 
+#ifdef POWERON_GPIOTEST 
+  #if POWERON_GPIOTEST == true 
+
   // Enable GPIO 2-9 for pin test.
   for (int PIN=0; PIN<NUM_CHANNELS_MAX; PIN++) {
     pinMode(PIN+GPIO_PIN_MIN, OUTPUT);
   }
 
   setSystemState(SYSTEM_STARTUP);
-  while (!Console) {
+  while (!Serial) {
     // wait for serial port to connect.
     // Run a slow GPIO pintest while waiting
     // Status LED pulses blue via SYSTEM_STARTUP state
@@ -403,6 +385,8 @@ void setup() {
       updateSystemStatusLED();
     }
   }
+
+  #endif
 #endif
 
   // Enable watchdog timer (8 seconds timeout)
@@ -422,64 +406,68 @@ void setup() {
   // Also show some details about the MCU and the codeversion
 
   // Show version
-  // Console.print("\x1b[2J\x1b[H"); // Clear screen, cursor home
-  Console.println();
-  Console.print("-=[ Shelf Indicators for Guided Handling Tasks ]=-\n" );
-  Console.println();
-  Console.print("SIGHT Version  : " );
-  Console.println(VERSION);  // Why does this add a 0 to the string ??
+  // Serial.print("\x1b[2J\x1b[H"); // Clear screen, cursor home
+  Serial.println();
+  Serial.println("-=[ Shelf Indicators for Guided Handling Tasks ]=-");
+  Serial.println();
+  Serial.print("SIGHT Version  : " );
+  Serial.println(VERSION);  // Why does this add a 0 to the string ??
 
   // Check if system recovered from watchdog reset
   if (watchdog_caused_reboot()) {
-    Console.println("*** WARNING: System recovered from watchdog timeout ***");
+    Serial.println("*** WARNING: System recovered from watchdog timeout ***");
   }
 
   // Boardname
-  Console.print("MicroController : " );
-  Console.println(BOARD_NAME);
+  Serial.print("MicroController : " );
+  Serial.println(BOARD_NAME);
 
   // CPU id
   // Note: often the MCU hangs/crashes on this... why ?
-  Console.print("MCU-Serial      : " );
+  Serial.print("MCU-Serial      : " );
   MicroID.getUniqueIDString(mcuId, 8);
-  Console.println(mcuId);
+  Serial.println(mcuId);
 
   // Blank line
-  Console.println();
-  Console.println("Initializing..." );
-  Console.println();
+  Serial.println();
+  Serial.println("Initializing..." );
+  Serial.println();
 
   // Initialize LittleFS if available
   if (!LittleFS.begin()){
-    Console.println("LittleFS mount failed!");
+    Serial.println("LittleFS mount failed!");
 
     // Attempt to format the filesystem
-    Console.println("Formatting LittleFS...");
+    Serial.println("Formatting LittleFS...");
     if (LittleFS.format()) {
-      Console.println("LittleFS formatting successful!");
+      Serial.println("LittleFS formatting successful!");
 
       // Try to mount again after formatting
       if (LittleFS.begin()) {
-        Console.println("LittleFS mounted successfully after formatting.");
+        Serial.println("LittleFS mounted successfully after formatting.");
       } else {
-        Console.println("WARNING !!!\nLittleFS mount failed after formatting --> Load/Saving configuration not possible...\n" );
+        Serial.println("WARNING !!!");
+        Serial.println("LittleFS mount failed after formatting --> Load/Saving configuration not possible...");
+        Serial.println();
         // delay(2000);
         // rebootMCU();
       }
     } else {
-        Console.println("WARNING !!!\nLittleFS formatting failed --> Load/Saving configuration not possible...\n" );
+        Serial.println("WARNING !!!");
+        Serial.println("LittleFS formatting failed --> Load/Saving configuration not possible...");
+        Serial.println();
       // delay(2000);
       // rebootMCU();
     }
   } else {
-    Console.println("LittleFS mounted successfully.");
+    Serial.println("LittleFS mounted successfully.");
     // Load or set defaults
     if (loadConfiguration() == false) {
-      Console.println("Setting default configuration");
+      Serial.println("Setting default configuration");
       resetToDefaults();
       // Set error state due to configuration failure
       setSystemState(SYSTEM_ERROR);
-      Console.println("Status LED: Red blink (config error)");
+      Serial.println("Status LED: Red blink (config error)");
     }
   }
 
@@ -568,11 +556,11 @@ void setup() {
     }
   }
 
-  Console.println("Initialization done..,");
+  Serial.println("Initialization done..,");
 
   // Set system state to normal operation
   setSystemState(SYSTEM_NORMAL);
-  Console.println("System ready - Status LED: Blue glow");
+  Serial.println("System ready - Status LED: Blue glow");
 
   // Run startup animation if enabled
   if (LedConfig.startupAnimation) {
@@ -594,14 +582,14 @@ void setup() {
   // Show help & config:
   showConfiguration();
 
-  Console.println("Enter 'H' for help ");
-  Console.println();
+  Serial.println("Enter 'H' for help ");
+  Serial.println();
 
   // Initialize boot time for uptime tracking
   bootTime = millis();
 
   // Ready to go, show prompt to show we are ready for input
-  Console.print("> ");
+  Serial.print("> ");
 }
 
 /**
@@ -658,7 +646,7 @@ void loop() {
   // Update system status LED pattern
   updateSystemStatusLED();
 
-  if (Console.available() > 0) {
+  if (Serial.available() > 0) {
     handleSerialInput();
   }
 
@@ -679,8 +667,8 @@ void loop() {
  * Supports backspace, cancel (ESC/Ctrl+C), and Command execution on newline
  */
 void handleSerialInput() {
-  while (Console.available() > 0) {
-    char c = Console.read();
+  while (Serial.available() > 0) {
+    char c = Serial.read();
 
     if (escapeState != ESC_STATE_NONE && escapeStartMillis && millis() - escapeStartMillis > ESC_TIMEOUT_MS) {
       escapeState = ESC_STATE_NONE;
@@ -745,11 +733,13 @@ void handleSerialInput() {
 
     switch (c) {
       case '\x03':
-        Console.println("\nCANCELLED");
+        Serial.println();
+        Serial.println("CANCELLED");
         resetInputBuffer();
-        Console.print("> ");
+        Serial.print("> ");
         break;
       case '\r':
+        break;
       case '\n':
         if (c == '\n' && !lastCharWasCR) {
           break;
@@ -789,18 +779,19 @@ bool isPrintable(const char c) {
  * Print current prompt and buffer with cursor positioning
  */
 void redrawInputLine() {
-  Console.print("\n> ");
-  Console.print(inputBuffer);
+  Serial.println();
+  Serial.print("> ");
+  Serial.print(inputBuffer);
   if (inputLength < lastRenderedLength) {
     for (uint16_t i = inputLength; i < lastRenderedLength; i++) {
-      Console.print(' ');
+      Serial.print(' ');
     }
   }
   lastRenderedLength = inputLength;
-
-  Console.print("\n> ");
+  Serial.println();
+  Serial.print("> ");
   for (uint16_t i = 0; i < cursorPosition && i < inputLength; i++) {
-    Console.print(inputBuffer[i]);
+    Serial.print(inputBuffer[i]);
   }
 }
 
@@ -830,7 +821,7 @@ void moveCursorEnd() {
 
 void insertCharacter(char c) {
   if (inputLength >= MAX_INPUT_LEN - 1) {
-    Console.print('\a');
+    Serial.print('\a');
     return;
   }
 
@@ -878,7 +869,7 @@ void resetInputBuffer() {
 }
 
 void acceptCurrentLine() {
-  Console.println();
+  Serial.println();
   if (inputLength >= MAX_INPUT_LEN) {
     inputLength = MAX_INPUT_LEN - 1;
   }
@@ -892,7 +883,7 @@ void acceptCurrentLine() {
   }
 
   checkInput(inputBuffer);
-  Console.print("> ");
+  Serial.print("> ");
 
   if (hadInput) {
     strncpy(commandHistory[historyHead], commandCopy, MAX_INPUT_LEN);
@@ -908,7 +899,7 @@ void acceptCurrentLine() {
 
 void recallHistory(int offset) {
   if (historySize == 0) {
-    Console.print('\a');
+    Serial.print('\a');
     return;
   }
 
@@ -944,7 +935,7 @@ void checkInput(char input[MAX_INPUT_LEN]) {
   CPULED(0x00,0x00,0x80);
 
   // Move to new line after user input
-  Console.println();
+  Serial.println();
 
   if (input[0] == 0) {
     return;
@@ -963,8 +954,8 @@ void checkInput(char input[MAX_INPUT_LEN]) {
 
   // Echo Command if enabled (useful for debugging/logging)
   if (LedConfig.CommandEcho) {
-    Console.print("CMD> ");
-    Console.println(input);
+    Serial.print("CMD> ");
+    Serial.println(input);
   }
 
   // Increment Command counter
@@ -981,29 +972,31 @@ void checkInput(char input[MAX_INPUT_LEN]) {
 
       // Version information
       case 'V':
-        Console.println("\n=== SIGHT Version Information ===");
-        Console.print("Version          : ");
-        Console.println(VERSION);
-        Console.print("Build Date       : ");
-        Console.println(__DATE__ " " __TIME__);
-        Console.print("LED Type       : ");
+        Serial.println();
+        Serial.println("=== SIGHT Version Information ===");
+        Serial.print("Version          : ");
+        Serial.println(VERSION);
+        Serial.print("Build Date       : ");
+        Serial.println(__DATE__ " " __TIME__);
+        Serial.print("LED Type       : ");
         #ifdef USE_RGBW_LEDS
-          Console.println("RGBW (4 bytes/LED)");
-          Console.println("Chipset          : SK6812");
-          Console.println("Color Order      : RGB");
+          Serial.println("RGBW (4 bytes/LED)");
+          Serial.println("Chipset          : SK6812");
+          Serial.println("Color Order      : RGB");
         #else
-          Console.println("RGB (3 bytes/LED)");
-          Console.println("Chipset          : WS2812B");
-          Console.println("Color Order      : GRB");
+          Serial.println("RGB (3 bytes/LED)");
+          Serial.println("Chipset          : WS2812B");
+          Serial.println("Color Order      : GRB");
         #endif
-        Console.print("MCU ID           : ");
-        Console.println(mcuId);
-        Console.println("=================================\n");
+        Serial.print("MCU ID           : ");
+        Serial.println(mcuId);
+        Serial.println("=================================");
+        Serial.println();
         break;
 
       // Display curren configuration
       case 'D':
-        Console.print("Display configuration:\n" );
+        Serial.println("Display configuration:");
         showConfiguration();
         break;
 
@@ -1016,22 +1009,24 @@ void checkInput(char input[MAX_INPUT_LEN]) {
       case 'S':
         if (Data[0] == 'e' || Data[0] == 'E') {
           // Se - Export configuration as hex string
-          Console.println("\n=== Configuration Export ===");
-          Console.print("CONFIG:");
+          Serial.println();
+          Serial.println("=== Configuration Export ===");
+          Serial.print("CONFIG:");
           uint8_t* configBytes = (uint8_t*)&LedConfig;
           for (size_t i = 0; i < sizeof(LedConfig); i++) {
-            if (configBytes[i] < 16) Console.print("0");
-            Console.print(configBytes[i], HEX);
-          }
-          Console.println();
-          Console.println("============================");
-          Console.println("Copy the CONFIG: line to backup this configuration.");
-          Console.println("Use 'Li:CONFIG:<hex>' to restore it.\n");
+            if (configBytes[i] < 16) Serial.print("0");
+            Serial.print(configBytes[i], HEX);
+          }   
+          Serial.println();
+          Serial.println("============================");
+          Serial.println("Copy the CONFIG: line to backup this configuration.") ;
+          Serial.println("Use 'Li:CONFIG:<hex>' to restore it.");
+          Serial.println();
         } else {
           // S - Save to flash
-          Console.print("Save configuration: " );
-          if (saveConfiguration()) Console.println("Success." );
-          else                     Console.println("Failed..." );
+          Serial.print("Save configuration: " );
+          if (saveConfiguration()) Serial.println("Success." );
+          else                     Serial.println("Failed..." );
         }
         break;
 
@@ -1051,10 +1046,10 @@ void checkInput(char input[MAX_INPUT_LEN]) {
                 char c = hexData[i];
                 if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) {
                   validHex = false;
-                  Console.print("ERROR: Invalid hex character '");
-                  Console.print(c);
-                  Console.print("' at position ");
-                  Console.println(i);
+                  Serial.print("ERROR: Invalid hex character '");
+                  Serial.print(c);
+                  Serial.print("' at position ");
+                  Serial.println(i);
                   break;
                 }
               }
@@ -1067,21 +1062,21 @@ void checkInput(char input[MAX_INPUT_LEN]) {
                   configBytes[i] = (uint8_t)strtol(byteStr, NULL, 16);
                 }
 
-                Console.println("Configuration imported successfully!");
-                Console.println("Use 'S' to save to flash, or 'R' to reboot and discard.");
+                Serial.println("Configuration imported successfully!");
+                Serial.println("Use 'S' to save to flash, or 'R' to reboot and discard.");
               }
             } else {
-              Console.print("ERROR: Invalid hex length. Expected ");
-              Console.print(expectedLen);
-              Console.print(" chars, got ");
-              Console.println(hexLen);
+              Serial.print("ERROR: Invalid hex length. Expected ");
+              Serial.print(expectedLen);
+              Serial.print(" chars, got ");
+              Serial.println(hexLen);
             }
           } else {
-            Console.println("ERROR: Format must be Li:CONFIG:<hex_string>");
+            Serial.println("ERROR: Format must be Li:CONFIG:<hex_string>");
           }
         } else {
           // L - Load from flash
-          Console.print("Load configuration: " );
+          Serial.print("Load configuration: " );
           loadConfiguration();
         }
         break;
@@ -1095,19 +1090,19 @@ void checkInput(char input[MAX_INPUT_LEN]) {
               TermState[groupID -1] = state;
               TermPct[groupID -1] = 100;
               sprintf(output,"Group %d state set to %d", groupID, state);
-              Console.println(output);
+              Serial.println(output);
             } else {
-              Console.print("ERROR: Invalid state '");
-              Console.print(state);
-              Console.println("', use 0-9");
+              Serial.print("ERROR: Invalid state '");
+              Serial.print(state);
+              Serial.println("', use 0-9");
             }
           } else {
-            Console.print("ERROR: Invalid Group-ID '");
-            Console.print(groupID);
-            Console.println("', use 1-48");
+            Serial.print("ERROR: Invalid Group-ID '");
+            Serial.print(groupID);
+            Serial.println("', use 1-48");
           }
         } else
-          Console.print("Syntax error: Use T<Group-ID>:<STATE>\n" );
+          Serial.println("Syntax error: Use T<Group-ID>:<STATE>");
         break;
 
       // Set Group state
@@ -1120,24 +1115,24 @@ void checkInput(char input[MAX_INPUT_LEN]) {
                 TermState[groupID -1] = state;
                 TermPct[groupID -1] = uint8_t(Pct);
                 sprintf(output,"Group %d state set to %d with progress %d%%", groupID, state, Pct);
-                Console.println(output);
+                Serial.println(output);
               } else {
-                Console.print("ERROR: Invalid percentage '");
-                Console.print(Pct);
-                Console.println("', use 0-100");
+                Serial.print("ERROR: Invalid percentage '");
+                Serial.print(Pct);
+                Serial.println("', use 0-100");
               }
             } else {
-              Console.print("ERROR: Invalid state '");
-              Console.print(state);
-              Console.println("', use 0-9");
+              Serial.print("ERROR: Invalid state '");
+              Serial.print(state);
+              Serial.println("', use 0-9");
             }
           } else {
-            Console.print("ERROR: Invalid Group-ID '");
-            Console.print(groupID);
-            Console.println("', use 1-48");
+            Serial.print("ERROR: Invalid Group-ID '");
+            Serial.print(groupID);
+            Serial.println("', use 1-48");
           }
         } else {
-          Console.print("Syntax error: Use Pgg:s:ppp (gg=group 1-48, s=state 0-9, ppp=percent 0-100)\n");
+          Serial.println("Syntax error: Use Pgg:s:ppp (gg=group 1-48, s=state 0-9, ppp=percent 0-100)");
         }
         break;
 
@@ -1146,19 +1141,19 @@ void checkInput(char input[MAX_INPUT_LEN]) {
         test = sscanf(Data, ":%d", &state);
         if (test == 1) {
           if (isValidState(state)) {
-            Console.print("All groups set to state " );
-            Console.println(state);
+            Serial.print("All groups set to state " );
+            Serial.println(state);
             for(int groupID = 1; groupID <= MAX_GROUPS; groupID++) {
               TermState[groupID -1 ] = state;
               TermPct[groupID -1] = 100;
             }
           } else {
-            Console.print("ERROR: Invalid state '");
-            Console.print(state);
-            Console.println("', use 0-9");
+            Serial.print("ERROR: Invalid state '");
+            Serial.print(state);
+            Serial.println("', use 0-9");
           }
         } else
-          Console.print("ERROR: Syntax error, use A:<STATE>\n" );
+          Serial.println("ERROR: Syntax error, use A:<STATE>");
         break;
 
       // Set mass state, a digit for each group (48 max)
@@ -1180,23 +1175,23 @@ void checkInput(char input[MAX_INPUT_LEN]) {
 
           // Warn if there are surplus Values
           if (totalChars > MAX_GROUPS) {
-            Console.print("WARNING: ");
-            Console.print(totalChars - MAX_GROUPS);
-            Console.print(" surplus Values ignored (max ");
-            Console.print(MAX_GROUPS);
-            Console.println(" groups)");
+            Serial.print("WARNING: ");
+            Serial.print(totalChars - MAX_GROUPS);
+            Serial.print(" surplus Values ignored (max ");
+            Serial.print(MAX_GROUPS);
+            Serial.println(" groups)");
           }
 
-          Console.print("Set ");
-          Console.print(min(totalChars, MAX_GROUPS));
-          Console.println(" group states");
+          Serial.print("Set ");
+          Serial.print(min(totalChars, MAX_GROUPS));
+          Serial.println(" group states");
         } else
-          Console.print("Syntax error: Use M:<STATE><STATE<<STATE>...\n");
+          Serial.println("Syntax error: Use M:<STATE><STATE<<STATE>...");
         break;
 
       // Reset all states to off
       case 'X':
-        Console.print("Reset all Group states.\n" );
+        Serial.println("Reset all Group states.");
         for(int groupID = 0; groupID < MAX_GROUPS; groupID++) {
           TermState[groupID] = 0;
           TermPct[groupID] = 100;
@@ -1206,31 +1201,32 @@ void checkInput(char input[MAX_INPUT_LEN]) {
 
       // Show startup loop
       case 'W':
-        Console.print("Showing startup loop.\n" );
+        Serial.println("Showing startup loop.");
         StartupLoop();
         break;
 
       // Memory usage report
       case 'I':
         {
-          Console.println("\n=== System Information ===");
-          Console.print("Free RAM         : ");
-          Console.print(rp2040.getFreeHeap());
-          Console.println(" bytes");
-          Console.print("Total RAM        : ");
-          Console.print(rp2040.getTotalHeap());
-          Console.println(" bytes");
-          Console.print("Used RAM         : ");
-          Console.print(rp2040.getUsedHeap());
-          Console.println(" bytes");
+          Serial.println();
+          Serial.println("=== System Information ===");
+          Serial.print("Free RAM         : ");
+          Serial.print(rp2040.getFreeHeap());
+          Serial.println(" bytes");
+          Serial.print("Total RAM        : ");
+          Serial.print(rp2040.getTotalHeap());
+          Serial.println(" bytes");
+          Serial.print("Used RAM         : ");
+          Serial.print(rp2040.getUsedHeap());
+          Serial.println(" bytes");
           FSInfo fs_info;
           LittleFS.info(fs_info);
-          Console.print("Flash Used       : ");
-          Console.print(fs_info.usedBytes);
-          Console.println(" bytes");
-          Console.print("Flash Total      : ");
-          Console.print(fs_info.totalBytes);
-          Console.println(" bytes");
+          Serial.print("Flash Used       : ");
+          Serial.print(fs_info.usedBytes);
+          Serial.println(" bytes");
+          Serial.print("Flash Total      : ");
+          Serial.print(fs_info.totalBytes);
+          Serial.println(" bytes");
 
           // Uptime and statistics
           uint32_t uptime = (millis() - bootTime) / 1000;
@@ -1239,23 +1235,24 @@ void checkInput(char input[MAX_INPUT_LEN]) {
           uint32_t minutes = (uptime % 3600) / 60;
           uint32_t seconds = uptime % 60;
 
-          Console.print("Uptime           : ");
+          Serial.print("Uptime           : ");
           if (days > 0) {
-            Console.print(days);
-            Console.print("d ");
+            Serial.print(days);
+            Serial.print("d ");
           }
-          Console.print(hours);
-          Console.print("h ");
-          Console.print(minutes);
-          Console.print("m ");
-          Console.print(seconds);
-          Console.println("s");
+          Serial.print(hours);
+          Serial.print("h ");
+          Serial.print(minutes);
+          Serial.print("m ");
+          Serial.print(seconds);
+          Serial.println("s");
 
-          Console.print("Commands         : ");
-          Console.println(CommandCount);
-          Console.print("Errors           : ");
-          Console.println(errorCount);
-          Console.println("==========================\n");
+          Serial.print("Commands         : ");
+          Serial.println(CommandCount);
+          Serial.print("Errors           : ");
+          Serial.println(errorCount);
+          Serial.println("==========================");
+          Serial.println();
 
           // Count groups in each state
           int stateCounts[10] = {0};
@@ -1268,73 +1265,75 @@ void checkInput(char input[MAX_INPUT_LEN]) {
             }
           }
 
-          Console.print("Active groups    : ");
-          Console.print(activeGroups);
-          Console.print(" / ");
-          Console.println(MAX_GROUPS);
+          Serial.print("Active groups    : ");
+          Serial.print(activeGroups);
+          Serial.print(" / ");
+          Serial.println(MAX_GROUPS);
 
-          Console.println("\nGroups per state:");
+          Serial.println();
+          Serial.println("Groups per state:");
           for (int state = 0; state <= MAX_STATE; state++) {
             if (stateCounts[state] > 0) {
-              Console.print("  state ");
-              Console.print(state);
-              Console.print(": ");
-              Console.print(stateCounts[state]);
-              Console.print(" group");
-              if (stateCounts[state] != SINGLE_GROUP) Console.print("s");
-              Console.println();
+              Serial.print("  state ");
+              Serial.print(state);
+              Serial.print(": ");
+              Serial.print(stateCounts[state]);
+              Serial.print(" group");
+              if (stateCounts[state] != SINGLE_GROUP) Serial.print("s");
+              Serial.println();
             }
           }
 
-          Console.println("\n=== Group states ===");
+          Serial.println(); 
+          Serial.println("=== Group states ===");
 
           for(int Index = 0; Index < LedConfig.numChannels; Index++) {
             // Use manual channel order mapping
             strip = LedConfig.channelOrder[Index] - 1;
 
-            Console.print("Channel ");
-            Console.print(strip + 1);
-            Console.print(" (Groups ");
+            Serial.print("Channel ");
+            Serial.print(strip + 1);
+            Serial.print(" (Groups ");
             sprintf(output, "%2d",Index*LedConfig.numGroupsPerChannel+1);
-            Console.print(output);
-            Console.print("-");
+            Serial.print(output);
+            Serial.print("-");
             sprintf(output, "%2d",Index*LedConfig.numGroupsPerChannel+LedConfig.numGroupsPerChannel);
-            Console.print(output);
-            Console.print("): ");
+            Serial.print(output);
+            Serial.print("): ");
 
             for(int term = 0; term < LedConfig.numGroupsPerChannel; term++) {
               int groupIdx = (Index*LedConfig.numGroupsPerChannel)+term;
-              Console.print(TermState[groupIdx]);
+              Serial.print(TermState[groupIdx]);
               if (TermPct[groupIdx] < 100) {
-                Console.print("(");
-                Console.print(TermPct[groupIdx]);
-                Console.print("%)");
+                Serial.print("(");
+                Serial.print(TermPct[groupIdx]);
+                Serial.print("%)");
               }
-              Console.print(' ');
+              Serial.print(' ');
             }
-            Console.println();
+              Serial.println();
           }
-          Console.println();
+          Serial.println();
         }
         break;
 
       // Reboot controller
       case 'R':
-        Console.print("Rebooting controller...\n" );
+        Serial.println("Rebooting controller...");
         rebootMCU();
         break;
 
       default:
-        Console.print("ERROR: Command '");
-        Console.print(Command);
-        Console.println("' unknown. Use H for help.");
+        Serial.print("ERROR: Command '");
+        Serial.print(Command);
+        Serial.println("' unknown. Use H for help.");
         errorCount++;
         break;
     }
   } else {
-    Console.print("SYNTAX ERROR: '");
-    Console.print(input[0]);
-    Console.println("' is not a valid command. Use A-Z commands only, H for help.");
+    Serial.print("SYNTAX ERROR: '");
+    Serial.print(input[0]);
+    Serial.println("' is not a valid command. Use A-Z commands only, H for help.");
     errorCount++;
   }
 }
@@ -1352,7 +1351,7 @@ bool validateChannelOrder(const char* orderStr, uint8_t* orderArray, uint8_t num
 
   // Check if length is reasonable (1-8 characters)
   if (len == 0 || len > 8) {
-    Console.println("ERROR: Channel order must be 1-8 digits");
+    Serial.println("ERROR: Channel order must be 1-8 digits");
     return false;
   }
 
@@ -1365,9 +1364,9 @@ bool validateChannelOrder(const char* orderStr, uint8_t* orderArray, uint8_t num
 
     // Check if character is a digit
     if (c < '1' || c > '8') {
-      Console.print("ERROR: Invalid channel '");
-      Console.print(c);
-      Console.println("' - must be 1-8");
+      Serial.print("ERROR: Invalid channel '");
+      Serial.print(c);
+      Serial.println("' - must be 1-8");
       return false;
     }
 
@@ -1375,9 +1374,9 @@ bool validateChannelOrder(const char* orderStr, uint8_t* orderArray, uint8_t num
 
     // Check for duplicates
     if (usedChannels[channel]) {
-      Console.print("ERROR: Duplicate channel '");
-      Console.print(channel);
-      Console.println("' in order");
+      Serial.print("ERROR: Duplicate channel '");
+      Serial.print(channel);
+      Serial.println("' in order");
       return false;
     }
 
@@ -1387,18 +1386,18 @@ bool validateChannelOrder(const char* orderStr, uint8_t* orderArray, uint8_t num
 
   // If less than 8 channels specified, append missing channels in numeric order
   if (len < 8) {
-    Console.print("WARNING: Only ");
-    Console.print(len);
-    Console.print(" channel(s) specified, appending missing channels: ");
+    Serial.print("WARNING: Only ");
+    Serial.print(len);
+    Serial.print(" channel(s) specified, appending missing channels: ");
 
     size_t currentIndex = len;
     for (uint8_t ch = 1; ch <= 8 && currentIndex < 8; ch++) {
       if (!usedChannels[ch]) {
         orderArray[currentIndex++] = ch;
-        Console.print(ch);
+        Serial.print(ch);
       }
     }
-    Console.println();
+    Serial.println();
   }
 
   // Validate that we have exactly numChannels unique channels
@@ -1411,9 +1410,9 @@ bool validateChannelOrder(const char* orderStr, uint8_t* orderArray, uint8_t num
       }
     }
     if (!found) {
-      Console.print("ERROR: Channel ");
-      Console.print(i + 1);
-      Console.println(" not found in order but numChannels requires it");
+      Serial.print("ERROR: Channel ");
+      Serial.print(i + 1);
+      Serial.println(" not found in order but numChannels requires it");
       return false;
     }
   }
@@ -1438,80 +1437,82 @@ void rebootMCU() {
  * Shows comprehensive Command reference with usage examples
  */
 void showHelp() {
-  Console.println("\n=== SIGHT Command Reference ===");
-  Console.println("  V                             Show version information");
-  Console.println("  H                             Show this help");
-  Console.println("  D                             Display current configuration");
-  Console.println("  I                             Show system info and group states");
-  Console.println("  S                             Save configuration to flash");
-  Console.println("  Se                            Save/Export configuration as hex (backup)");
-  Console.println("  L                             Load configuration from flash");
-  Console.println("  Li:CONFIG:                    Load/Import configuration from hex (restore)");
-  Console.println("  R                             Reboot controller");
-  Console.println("  W                             Show startup loop animation");
-  Console.println();
+  Serial.println();
+  Serial.println("=== SIGHT Command Reference ===");
+  Serial.println("  V                             Show version information");
+  Serial.println("  H                             Show this help");
+  Serial.println("  D                             Display current configuration");
+  Serial.println("  I                             Show system info and group states");
+  Serial.println("  S                             Save configuration to flash");
+  Serial.println("  Se                            Save/Export configuration as hex (backup)");
+  Serial.println("  L                             Load configuration from flash");
+  Serial.println("  Li:CONFIG:                    Load/Import configuration from hex (restore)");
+  Serial.println("  R                             Reboot controller");
+  Serial.println("  W                             Show startup loop animation");
+  Serial.println();
 
-  Console.println("Group Control:");
-  Console.print  ("  T<groupID>:<state>            Set Group state. groupID: 1-");
-  Console.print  (MAX_GROUPS);
-  Console.println(" and state: 0-9");
-  Console.print  ("  P<groupID>:<state>:<Pct>      Set Group state. groupID: 1-");
-  Console.print  (MAX_GROUPS);
-  Console.println(", state: 0-9, PCt=0-100% progress");
-  Console.println("  M:<state><state>...           Set state for multiple Groups sequentially (e.g. '113110')");
-  Console.println("  A:<state>                     Set state for all Groups, state (0-9)");
-  Console.println("  X                             Set all states to off (same as 'A:0')");
-  Console.println();
+  Serial.println("Group Control:");
+  Serial.print  ("  T<groupID>:<state>            Set Group state. groupID: 1-");
+  Serial.print  (MAX_GROUPS);
+  Serial.println(" and state: 0-9");
+  Serial.print  ("  P<groupID>:<state>:<Pct>      Set Group state. groupID: 1-");
+  Serial.print  (MAX_GROUPS);
+  Serial.println(", state: 0-9, PCt=0-100% progress");
+  Serial.println("  M:<state><state>...           Set state for multiple Groups sequentially (e.g. '113110')");
+  Serial.println("  A:<state>                     Set state for all Groups, state (0-9)");
+  Serial.println("  X                             Set all states to off (same as 'A:0')");
+  Serial.println();
 
-  Console.println("Configuration (C prefix):");
-  Console.println("  Cn:<string>                   Set Controller name (ID) (1-16 chars)");
-  Console.print  ("  Cl:<Value>                    Set amount of LEDs per channel (");
-  Console.print  (NUM_LEDS_PER_CHANNEL_MIN);
-  Console.print  ("-");
-  Console.print  (NUM_LEDS_PER_CHANNEL_MAX);
-  Console.println(")");
-  Console.print  ("  Ct:<Value>                    Set amount of groups per channel (1-");
-  Console.print  (NUM_GROUPS_PER_CHANNEL_MAX);
-  Console.println(")");
-  Console.print  ("  Cs:<Value>                    Set amount of active channels (1-");
-  Console.print  (NUM_CHANNELS_MAX);
-  Console.println(")");
-  Console.print  ("  Cw:<Value>                    Set spacer-width (LEDs between groups, 0-");
-  Console.print  (SPACER_WIDTH_MAX);
-  Console.println(")");
-  Console.print  ("  Co:<Value>                    Set starting offset (skipping leds at start of channel, 0-");
-  Console.print  (START_OFFSET_MAX);
-  Console.println(")");
-  Console.print  ("  Cb:<Value>                    Set blink-interval in msec (");
-  Console.print  (BLINK_INTERVAL_MIN);
-  Console.print  ("-");
-  Console.print  (BLINK_INTERVAL_MAX);
-  Console.println(")");
-  Console.print  ("  Cu:<Value>                    Set update interval in mSec (");
-  Console.print  (UPDATE_INTERVAL_MIN);
-  Console.print  ("-");
-  Console.print  (UPDATE_INTERVAL_MAX);
-  Console.println(")");
-  Console.print  ("  Ca:<Value>                    Set animate-interval in msec (");
-  Console.print  (ANIMATE_INTERVAL_MIN);
-  Console.print  ("-");
-  Console.print  (ANIMATE_INTERVAL_MAX);
-  Console.println(")");
-  Console.println("  Ci:<Value>                    Set brightness intensity (0-255)");
-  Console.println("  Cf:<anim>:<fade-in>:<fade-out> Configure animation + 2-step fade-in/out (0-255)");
-  Console.println("  Cc:<state>:<Value>            Set color for state in HEX RGB order (state 1-9, Value: RRGGBB)");
-  Console.println("  Cp:<state>:<pattern>          Set display-pattern for state in (state: 0-9, pattern 0-9) [for colorblind assist]");
-  Console.println("  Cz:<order>                    Set channel order (N=standard 12345678, or custom like 43215678)");
-  Console.println("  C4:<yes/true/no/false>        Set RGBW leds (4bytes) instead of RGB (3bytes) (False/True)");
-  Console.print  ("  Cx:<channel>:<cpio-pin>       Set CPIO pin (");
-  Console.print  (GPIO_PIN_MIN);
-  Console.print  ("-");
-  Console.print  (GPIO_PIN_MAX);
-  Console.println(") per channel (1-8)");
-  Console.println("  Cd:                           Reset all settings to factory defaults");
-  Console.println("\n");
-  Console.println("  L                             Load stored configuration from EEPROM/FLASH");
-  Console.println("  S                             Save configuration to EEPROM/FLASH");
+  Serial.println("Configuration (C prefix):");
+  Serial.println("  Cn:<string>                   Set Controller name (ID) (1-16 chars)");
+  Serial.print  ("  Cl:<Value>                    Set amount of LEDs per channel (");
+  Serial.print  (NUM_LEDS_PER_CHANNEL_MIN);
+  Serial.print  ("-");
+  Serial.print  (NUM_LEDS_PER_CHANNEL_MAX);
+  Serial.println(")");
+  Serial.print  ("  Ct:<Value>                    Set amount of groups per channel (1-");
+  Serial.print  (NUM_GROUPS_PER_CHANNEL_MAX);
+  Serial.println(")");
+  Serial.print  ("  Cs:<Value>                    Set amount of active channels (1-");
+  Serial.print  (NUM_CHANNELS_MAX);
+  Serial.println(")");
+  Serial.print  ("  Cw:<Value>                    Set spacer-width (LEDs between groups, 0-");
+  Serial.print  (SPACER_WIDTH_MAX);
+  Serial.println(")");
+  Serial.print  ("  Co:<Value>                    Set starting offset (skipping leds at start of channel, 0-");
+  Serial.print  (START_OFFSET_MAX);
+  Serial.println(")");
+  Serial.print  ("  Cb:<Value>                    Set blink-interval in msec (");
+  Serial.print  (BLINK_INTERVAL_MIN);
+  Serial.print  ("-");
+  Serial.print  (BLINK_INTERVAL_MAX);
+  Serial.println(")");
+  Serial.print  ("  Cu:<Value>                    Set update interval in mSec (");
+  Serial.print  (UPDATE_INTERVAL_MIN);
+  Serial.print  ("-");
+  Serial.print  (UPDATE_INTERVAL_MAX);
+  Serial.println(")");
+  Serial.print  ("  Ca:<Value>                    Set animate-interval in msec (");
+  Serial.print  (ANIMATE_INTERVAL_MIN);
+  Serial.print  ("-");
+  Serial.print  (ANIMATE_INTERVAL_MAX);
+  Serial.println(")");
+  Serial.println("  Ci:<Value>                    Set brightness intensity (0-255)");
+  Serial.println("  Cf:<anim>:<fade-in>:<fade-out> Configure animation + 2-step fade-in/out (0-255)");
+  Serial.println("  Cc:<state>:<Value>            Set color for state in HEX RGB order (state 1-9, Value: RRGGBB)");
+  Serial.println("  Cp:<state>:<pattern>          Set display-pattern for state in (state: 0-9, pattern 0-9) [for colorblind assist]");
+  Serial.println("  Cz:<order>                    Set channel order (N=standard 12345678, or custom like 43215678)");
+  Serial.println("  C4:<yes/true/no/false>        Set RGBW leds (4bytes) instead of RGB (3bytes) (False/True)");
+  Serial.print  ("  Cx:<channel>:<cpio-pin>       Set CPIO pin (");
+  Serial.print  (GPIO_PIN_MIN);
+  Serial.print  ("-");
+  Serial.print  (GPIO_PIN_MAX);
+  Serial.println(") per channel (1-8)");
+  Serial.println("  Cd:                           Reset all settings to factory defaults");
+  Serial.println();
+  Serial.println();
+  Serial.println("  L                             Load stored configuration from EEPROM/FLASH");
+  Serial.println("  S                             Save configuration to EEPROM/FLASH");
 }
 
 /**
@@ -1985,26 +1986,26 @@ void setConfigParameters(char *Data) {
         if (strlen(Value) < IDENTIFIER_MAX_LENGTH ) {
           strncpy(LedConfig.identifier, Value, IDENTIFIER_MAX_LENGTH - 1);
           LedConfig.identifier[IDENTIFIER_MAX_LENGTH - 1] = '\0'; // Ensure null-termination
-          Console.print("Controller Name (ID)   : " );
-          Console.println(LedConfig.identifier);
+          Serial.print("Controller Name (ID)   : " );
+          Serial.println(LedConfig.identifier);
         } else {
-          Console.println("Identifier too long, use 16 characters max.");
+          Serial.println("Identifier too long, use 16 characters max.");
         }
         break;
       // set led per channel
       case 'l':
         ValueInt = atoi(Value);
         if (ValueInt >= NUM_LEDS_PER_CHANNEL_MIN and ValueInt <= NUM_LEDS_PER_CHANNEL_MAX) {
-          Console.print("LEDs per channel      : " );
+          Serial.print("LEDs per channel      : " );
           LedConfig.numLedsPerChannel = ValueInt;
-          Console.println(LedConfig.numLedsPerChannel);
+          Serial.println(LedConfig.numLedsPerChannel);
           FastLED.clearData();
         } else {
-          Console.print("Invalid number of leds per channel(");
-          Console.print(NUM_LEDS_PER_CHANNEL_MIN);
-          Console.print("-");
-          Console.print(NUM_LEDS_PER_CHANNEL_MAX);
-          Console.println(")");
+          Serial.print("Invalid number of leds per channel(");
+          Serial.print(NUM_LEDS_PER_CHANNEL_MIN);
+          Serial.print("-");
+          Serial.print(NUM_LEDS_PER_CHANNEL_MAX);
+          Serial.println(")");
         }
         break;
       // set groups per channel
@@ -2013,25 +2014,25 @@ void setConfigParameters(char *Data) {
         if (ValueInt >= 1 and ValueInt <= NUM_GROUPS_PER_CHANNEL_MAX) {
           // Check if total groups would exceed MAX_GROUPS
           if (LedConfig.numChannels * ValueInt > MAX_GROUPS) {
-            Console.print("ERROR: Channels (");
-            Console.print(LedConfig.numChannels);
-            Console.print(") * Groups Per Channel (");
-            Console.print(ValueInt);
-            Console.print(") = ");
-            Console.print(LedConfig.numChannels * ValueInt);
-            Console.print(" exceeds MAX_GROUPS (");
-            Console.print(MAX_GROUPS);
-            Console.println(")!");
+            Serial.print("ERROR: Channels (");
+            Serial.print(LedConfig.numChannels);
+            Serial.print(") * Groups Per Channel (");
+            Serial.print(ValueInt);
+            Serial.print(") = ");
+            Serial.print(LedConfig.numChannels * ValueInt);
+            Serial.print(" exceeds MAX_GROUPS (");
+            Serial.print(MAX_GROUPS);
+            Serial.println(")!");
           } else {
-            Console.print("Groups per channel : " );
+            Serial.print("Groups per channel : " );
             LedConfig.numGroupsPerChannel = ValueInt;
-            Console.println(LedConfig.numGroupsPerChannel);
+            Serial.println(LedConfig.numGroupsPerChannel);
             FastLED.clearData();
           }
         } else {
-          Console.print("Invalid number of groups per channel (1-");
-          Console.print(NUM_GROUPS_PER_CHANNEL_MAX);
-          Console.println(")");
+          Serial.print("Invalid number of groups per channel (1-");
+          Serial.print(NUM_GROUPS_PER_CHANNEL_MAX);
+          Serial.println(")");
         }
         break;
       // set number of channels
@@ -2040,25 +2041,25 @@ void setConfigParameters(char *Data) {
         if (ValueInt >= 1 and ValueInt <= NUM_CHANNELS_MAX) {
           // Check if total groups would exceed MAX_GROUPS
           if (ValueInt * LedConfig.numGroupsPerChannel > MAX_GROUPS) {
-            Console.print("ERROR: Channels (");
-            Console.print(ValueInt);
-            Console.print(") * Groups Per Channel (");
-            Console.print(LedConfig.numGroupsPerChannel);
-            Console.print(") = ");
-            Console.print(ValueInt * LedConfig.numGroupsPerChannel);
-            Console.print(" exceeds MAX_GROUPS (");
-            Console.print(MAX_GROUPS);
-            Console.println(")!");
+            Serial.print("ERROR: Channels (");
+            Serial.print(ValueInt);
+            Serial.print(") * Groups Per Channel (");
+            Serial.print(LedConfig.numGroupsPerChannel);
+            Serial.print(") = ");
+            Serial.print(ValueInt * LedConfig.numGroupsPerChannel);
+            Serial.print(" exceeds MAX_GROUPS (");
+            Serial.print(MAX_GROUPS);
+            Serial.println(")!");
           } else {
-            Console.print("Amount of channels    : " );
+            Serial.print("Amount of channels    : " );
             LedConfig.numChannels = ValueInt;
-            Console.println(LedConfig.numChannels);
+            Serial.println(LedConfig.numChannels);
             FastLED.clearData();
           }
         } else {
-          Console.print("Invalid number of channels (1-");
-          Console.print(NUM_CHANNELS_MAX);
-          Console.println(")");
+          Serial.print("Invalid number of channels (1-");
+          Serial.print(NUM_CHANNELS_MAX);
+          Serial.println(")");
 
         }
         break;
@@ -2066,45 +2067,45 @@ void setConfigParameters(char *Data) {
       case 'w':
         ValueInt = atoi(Value);
         if (ValueInt >= 0 and ValueInt <= SPACER_WIDTH_MAX) {
-          Console.print("Spacer width         : " );
+          Serial.print("Spacer width         : " );
           LedConfig.spacerWidth = ValueInt;
-          Console.println(LedConfig.spacerWidth);
+          Serial.println(LedConfig.spacerWidth);
           FastLED.clearData();
         } else {
-          Console.print("Invalid space width(0-");
-          Console.print(SPACER_WIDTH_MAX);
-          Console.println(")");
+          Serial.print("Invalid space width(0-");
+          Serial.print(SPACER_WIDTH_MAX);
+          Serial.println(")");
         }
         break;
       case 'o':
         ValueInt = atoi(Value);
         if (ValueInt >= 0 and ValueInt <= START_OFFSET_MAX) {
-          Console.print("Start offset         : " );
+          Serial.print("Start offset         : " );
           LedConfig.startOffset = ValueInt;
-          Console.println(LedConfig.startOffset);
+          Serial.println(LedConfig.startOffset);
           FastLED.clearData();
         } else {
-          Console.print("Invalid start offset (0-");
-          Console.print(START_OFFSET_MAX);
-          Console.println(")");
+          Serial.print("Invalid start offset (0-");
+          Serial.print(START_OFFSET_MAX);
+          Serial.println(")");
         }
         break;
       // Set animate interval
       case 'a':
         ValueInt = atoi(Value);
         if (ValueInt >= ANIMATE_INTERVAL_MIN and ValueInt <= ANIMATE_INTERVAL_MAX) {
-          Console.print("Animation interval   : " );
+          Serial.print("Animation interval   : " );
           LedConfig.animateinterval = ValueInt;
-          Console.println(LedConfig.animateinterval);
+          Serial.println(LedConfig.animateinterval);
           animate_Timer.detach();
           animate_Timer.attach_ms(LedConfig.animateinterval, &animateStep);
           FastLED.clearData();
         } else {
-          Console.print("Invalid animate interval (");
-          Console.print(ANIMATE_INTERVAL_MIN);
-          Console.print("-");
-          Console.print(ANIMATE_INTERVAL_MAX);
-          Console.println(" msec)");
+          Serial.print("Invalid animate interval (");
+          Serial.print(ANIMATE_INTERVAL_MIN);
+          Serial.print("-");
+          Serial.print(ANIMATE_INTERVAL_MAX);
+          Serial.println(" msec)");
         }
         break;
       // Set blink interval
@@ -2112,23 +2113,23 @@ void setConfigParameters(char *Data) {
         ValueInt = atoi(Value);
         if (ValueInt >= BLINK_INTERVAL_MIN and ValueInt <= BLINK_INTERVAL_MAX) {
           if (ValueInt > LedConfig.updateinterval) {
-            Console.print("Blinking interval    : " );
+            Serial.print("Blinking interval    : " );
             LedConfig.blinkinterval = ValueInt;
-            Console.println(LedConfig.blinkinterval);
+            Serial.println(LedConfig.blinkinterval);
             blink_Timer.detach();
             blink_Timer.attach_ms(LedConfig.blinkinterval, &setBlinkState);
             FastLED.clearData();
           } else {
-            Console.print("Invalid blinking-interval, needs to be bigger than current update-interval (");
-            Console.print(LedConfig.updateinterval);
-            Console.println(")");
+            Serial.print("Invalid blinking-interval, needs to be bigger than current update-interval (");
+            Serial.print(LedConfig.updateinterval);
+            Serial.println(")");
           }
         } else {
-          Console.print("Invalid blink interval (");
-          Console.print(BLINK_INTERVAL_MIN);
-          Console.print("-");
-          Console.print(BLINK_INTERVAL_MAX);
-          Console.println(" msec)");
+          Serial.print("Invalid blink interval (");
+          Serial.print(BLINK_INTERVAL_MIN);
+          Serial.print("-");
+          Serial.print(BLINK_INTERVAL_MAX);
+          Serial.println(" msec)");
         }
           break;
 
@@ -2137,9 +2138,9 @@ void setConfigParameters(char *Data) {
         ValueInt = atoi(Value);
         if (ValueInt >= UPDATE_INTERVAL_MIN and ValueInt <= UPDATE_INTERVAL_MAX) {
           if (ValueInt < LedConfig.blinkinterval) {
-            Console.print("Update interval      : ");
+            Serial.print("Update interval      : ");
             LedConfig.updateinterval = ValueInt;
-            Console.println(LedConfig.updateinterval);
+            Serial.println(LedConfig.updateinterval);
             setgroup_Timer.detach();
             setgroup_Timer.attach_ms(LedConfig.updateinterval*2, &setGroupState);
             update_Timer.detach();
@@ -2153,16 +2154,16 @@ void setConfigParameters(char *Data) {
 
             FastLED.clearData();
           } else {
-            Console.print("Invalid update-interval, needs to be smaller than current blink-interval (");
-            Console.print(LedConfig.blinkinterval);
-            Console.println(")");
+            Serial.print("Invalid update-interval, needs to be smaller than current blink-interval (");
+            Serial.print(LedConfig.blinkinterval);
+            Serial.println(")");
           }
         } else {
-          Console.print("Invalid update interval (");
-          Console.print(UPDATE_INTERVAL_MIN);
-          Console.print("-");
-          Console.print(UPDATE_INTERVAL_MAX);
-          Console.println(" msec)");
+          Serial.print("Invalid update interval (");
+          Serial.print(UPDATE_INTERVAL_MIN);
+          Serial.print("-");
+          Serial.print(UPDATE_INTERVAL_MAX);
+          Serial.println(" msec)");
         }
         break;
 
@@ -2170,22 +2171,22 @@ void setConfigParameters(char *Data) {
       case 'i':
         ValueInt = atoi(Value);
         if (ValueInt >= BRIGHTNESS_MIN and ValueInt <= BRIGHTNESS_MAX) {
-          Console.print("Brightness intensity   : " );
+          Serial.print("Brightness intensity   : " );
           LedConfig.brightness = ValueInt;
-          Console.println(LedConfig.brightness);
+          Serial.println(LedConfig.brightness);
           FastLED.setBrightness(LedConfig.brightness);
           FastLED.clearData();
 
           // Warn if brightness is very high
           if (ValueInt > BRIGHTNESS_WARNING_THRESHOLD) {
-            Console.println("WARNING: High brightness may cause overheating or exceed power supply capacity!");
+            Serial.println("WARNING: High brightness may cause overheating or exceed power supply capacity!");
           }
         } else {
-          Console.print("Invalid brightness intensity (");
-          Console.print(BRIGHTNESS_MIN);
-          Console.print("-");
-          Console.print(BRIGHTNESS_MAX);
-          Console.println(")");
+          Serial.print("Invalid brightness intensity (");
+          Serial.print(BRIGHTNESS_MIN);
+          Serial.print("-");
+          Serial.print(BRIGHTNESS_MAX);
+          Serial.println(")");
         }
         break;
 
@@ -2208,39 +2209,39 @@ void setConfigParameters(char *Data) {
           }
 
           if (!valid) {
-            Console.println("Invalid fade values (0-255)");
+            Serial.println("Invalid fade values (0-255)");
           } else if (idx == 0) {
-            Console.println("Usage: Cf:<anim>:<fade-in>:<fade-out>");
+            Serial.println("Usage: Cf:<anim>:<fade-in>:<fade-out>");
           } else if (idx == 1) {
             // Backwards compatibility: Cf:<Value>
             LedConfig.fadingAnimation = values[0];
             LedConfig.fading2StepIn = values[0] / 2;
             LedConfig.fading2StepOut = values[0] / 2;
-            Console.print("Fading factor          : ");
-            Console.print(LedConfig.fadingAnimation);
-            Console.print(" (2-step fade in/out: ");
-            Console.print(LedConfig.fading2StepIn);
-            Console.println(")");
+            Serial.print("Fading factor          : ");
+            Serial.print(LedConfig.fadingAnimation);
+            Serial.print(" (2-step fade in/out: ");
+            Serial.print(LedConfig.fading2StepIn);
+            Serial.println(")");
             FastLED.clearData();
           } else if (idx == 2) {
             LedConfig.fadingAnimation = values[0];
             LedConfig.fading2StepIn = values[1];
             LedConfig.fading2StepOut = values[1];
-            Console.print("Animation fading factor: ");
-            Console.print(LedConfig.fadingAnimation);
-            Console.print(", 2-step fade (in/out): ");
-            Console.println(LedConfig.fading2StepIn);
+            Serial.print("Animation fading factor: ");
+            Serial.print(LedConfig.fadingAnimation);
+            Serial.print(", 2-step fade (in/out): ");
+            Serial.println(LedConfig.fading2StepIn);
             FastLED.clearData();
           } else if (idx == 3) {
             LedConfig.fadingAnimation = values[0];
             LedConfig.fading2StepIn = values[1];
             LedConfig.fading2StepOut = values[2];
-            Console.print("Animation fading factor: ");
-            Console.print(LedConfig.fadingAnimation);
-            Console.print(", 2-step fade in/out: ");
-            Console.print(LedConfig.fading2StepIn);
-            Console.print(" / ");
-            Console.println(LedConfig.fading2StepOut);
+            Serial.print("Animation fading factor: ");
+            Serial.print(LedConfig.fadingAnimation);
+            Serial.print(", 2-step fade in/out: ");
+            Serial.print(LedConfig.fading2StepIn);
+            Serial.print(" / ");
+            Serial.println(LedConfig.fading2StepOut);
             FastLED.clearData();
           }
         }
@@ -2252,7 +2253,7 @@ void setConfigParameters(char *Data) {
           // Set to standard order (12345678)
           LedConfig.channelOrder[0] = 1; LedConfig.channelOrder[1] = 2; LedConfig.channelOrder[2] = 3; LedConfig.channelOrder[3] = 4;
           LedConfig.channelOrder[4] = 5; LedConfig.channelOrder[5] = 6; LedConfig.channelOrder[6] = 7; LedConfig.channelOrder[7] = 8;
-          Console.println("Channel order set to: 12345678 (standard)");
+          Serial.println("Channel order set to: 12345678 (standard)");
           FastLED.clearData();
         } else {
           // Try to parse as custom channel order
@@ -2262,14 +2263,14 @@ void setConfigParameters(char *Data) {
             for (int i = 0; i < 8; i++) {
               LedConfig.channelOrder[i] = tempOrder[i];
             }
-            Console.print("Channel order set to: ");
+            Serial.print("Channel order set to: ");
             for (int i = 0; i < 8; i++) {
-              Console.print(LedConfig.channelOrder[i]);
+              Serial.print(LedConfig.channelOrder[i]);
             }
-            Console.println();
+            Serial.println();
             FastLED.clearData();
           } else {
-            Console.println("Invalid channel order. Use: N (standard 12345678) or custom like 43215678");
+            Serial.println("Invalid channel order. Use: N (standard 12345678) or custom like 43215678");
           }
         }
         break;
@@ -2278,12 +2279,12 @@ void setConfigParameters(char *Data) {
       case 'g':
         if (*Value == 'N' or *Value == 'n' or *Value == 'F' or *Value == 'f' or *Value == '0') {
           LedConfig.startupAnimation = false;
-          Console.println("Startup animation    : Disabled");
+          Serial.println("Startup animation    : Disabled");
         } else if (*Value == 'Y' or *Value == 'y' or *Value == 'T' or *Value == 't' or *Value == '1') {
           LedConfig.startupAnimation = true;
-          Console.println("Startup animation    : Enabled");
+          Serial.println("Startup animation    : Enabled");
         } else {
-          Console.println("Invalid Value, use Y/N or 1/0");
+          Serial.println("Invalid Value, use Y/N or 1/0");
         }
         break;
 
@@ -2291,12 +2292,12 @@ void setConfigParameters(char *Data) {
       case 'e':
         if (*Value == 'N' or *Value == 'n' or *Value == 'F' or *Value == 'f' or *Value == '0') {
           LedConfig.CommandEcho = false;
-          Console.println("Command echo         : Disabled");
+          Serial.println("Command echo         : Disabled");
         } else if (*Value == 'Y' or *Value == 'y' or *Value == 'T' or *Value == 't' or *Value == '1') {
           LedConfig.CommandEcho = true;
-          Console.println("Command echo         : Enabled");
+          Serial.println("Command echo         : Enabled");
         } else {
-          Console.println("Invalid Value, use Y/N or 1/0");
+          Serial.println("Invalid Value, use Y/N or 1/0");
         }
         break;
       // Set color-pattern (colorblind assist)
@@ -2317,17 +2318,18 @@ void setConfigParameters(char *Data) {
       // set defaults
       case 'd':
         resetToDefaults();
-        Console.println("Configuration reset to defaults\n");
+        Serial.println("Configuration reset to defaults");
+        Serial.println();
         FastLED.clearData();
         break;
       default:
-        Console.print("SYNTAX ERROR: Configuration item '");
-        Console.print(configItem);
-        Console.println("' unknown. Use H for help.");
+        Serial.print("SYNTAX ERROR: Configuration item '");
+        Serial.print(configItem);
+        Serial.println("' unknown. Use H for help.");
         break;
     }
   } else {
-    Console.print("SYNTAX ERROR: Invalid configuration format. Use C<item>:<value> format, H for help.\n");
+    Serial.println("SYNTAX ERROR: Invalid configuration format. Use C<item>:<value> format, H for help.");
   }
 }
 
@@ -2347,44 +2349,45 @@ void setLedStripGPIO(char *Value) {
         // Test if GPIO pin is not assigned already
         for (uint8_t CHANNEL=0; CHANNEL<NUM_CHANNELS_DEFAULT ; CHANNEL++) {
           if (GPIO_PIN == LedConfig.channelGPIOpin[CHANNEL]) {
-            Console.print("ERROR: GPIO-PIN ");
-            Console.print(GPIO_PIN);
-            Console.print(" is already used for channel ");
-            Console.print(CHANNEL);
-            Console.print(" !");
+            Serial.print("ERROR: GPIO-PIN ");
+            Serial.print(GPIO_PIN);
+            Serial.print(" is already used for channel ");
+            Serial.print(CHANNEL);
+            Serial.print(" !");
             return;
           }
         }
         if (GPIO_PIN == CPULED_GPIO) {
-          Console.print("ERROR: GPIO-PIN ");
-          Console.print(GPIO_PIN);
-          Console.print(" is already used for CPULED !");
+          Serial.print("ERROR: GPIO-PIN ");
+          Serial.print(GPIO_PIN);
+          Serial.print(" is already used for CPULED !");
           return;
         }
 
         LedConfig.channelGPIOpin[channel] = GPIO_PIN;
-        Console.print("GPIO-PIN for channel ");
-        Console.print(channel);
-        Console.print(" is set to : ");
-        Console.print(LedConfig.channelGPIOpin[channel]);
-        Console.println();
-        Console.println("Please note a MCU reboot is required to activate a change in GPIO pin assignments");
+        Serial.print("GPIO-PIN for channel ");
+        Serial.print(channel);
+        Serial.print(" is set to : ");
+        Serial.print(LedConfig.channelGPIOpin[channel]);
+        Serial.println();
+        Serial.println("Please note a MCU reboot is required to activate a change in GPIO pin assignments");
       } else {
-        Console.println("Invalid GPIO-PIN number.");
+        Serial.println("Invalid GPIO-PIN number.");
       }
     } else {
-      Console.print  ("Invalid channel, 1-");
-      Console.print  (NUM_CHANNELS_MAX);
-      Console.println(" only.");
+      Serial.print  ("Invalid channel, 1-");
+      Serial.print  (NUM_CHANNELS_MAX);
+      Serial.println(" only.");
     }
   } else {
-      Console.println("Syntax error: use Cx:<channel>:<GPIO-PIN>     (<channel: 1-");
-      Console.print  (NUM_CHANNELS_MAX);
-      Console.print  (", <GPIO-PIN>: ");
-      Console.print  (GPIO_PIN_MIN);
-      Console.print  ("-");
-      Console.print  (GPIO_PIN_MAX);
-      Console.println(")\n");
+      Serial.println("Syntax error: use Cx:<channel>:<GPIO-PIN>     (<channel: 1-");
+      Serial.print  (NUM_CHANNELS_MAX);
+      Serial.print  (", <GPIO-PIN>: ");
+      Serial.print  (GPIO_PIN_MIN);
+      Serial.print  ("-");
+      Serial.print  (GPIO_PIN_MAX);
+      Serial.println(")");
+      Serial.println();
   }
 }
 
@@ -2402,20 +2405,21 @@ void setLedstateColor(char *Value) {
       if (RGB > 0 && RGB < 0xFFFFFFFF) {
         LedConfig.state_color[state] = RGB + 0xFF000000; // Add brightness
         sprintf(buffer, "%06X", (int)RGB);
-        Console.print("Color for state ");
-        Console.print(state);
-        Console.print(" is set to : ");
+        Serial.print("Color for state ");
+        Serial.print(state);
+        Serial.print(" is set to : ");
         snprintf(buffer, strlen(buffer), "%02X%02X%02X", LedConfig.state_color[state].red, LedConfig.state_color[state].green, LedConfig.state_color[state].blue);
-        Console.print(buffer);
-        Console.println(" (RR GG BB)");
+        Serial.print(buffer);
+        Serial.println(" (RR GG BB)");
       } else {
-        Console.println("Invalid color");
+        Serial.println("Invalid color");
       }
     } else {
-      Console.println("Invalid state, 1-9 only");
+      Serial.println("Invalid state, 1-9 only");
     }
   } else {
-    Console.println("Syntax error: use Cc:<STATE>:<BBGGRR>   (<state>: 1-9, <BBGGRR>: Color in Hex))\n");
+    Serial.println("Syntax error: use Cc:<STATE>:<BBGGRR>   (<state>: 1-9, <BBGGRR>: Color in Hex))");
+    Serial.println();
   }
 }
 
@@ -2434,19 +2438,20 @@ void setLedstatePattern(char *Value) {
       int pattern=atoi(Value+2);
       if ( pattern <= 12) {
         LedConfig.state_pattern[state] = pattern;
-        Console.print("Pattern for state ");
-        Console.print(state);
-        Console.print(" is set to : ");
-        Console.print(LedConfig.state_pattern[state]);
-        Console.println();
+        Serial.print("Pattern for state ");
+        Serial.print(state);
+        Serial.print(" is set to : ");
+        Serial.print(LedConfig.state_pattern[state]);
+        Serial.println();
       } else {
-        Console.println("Invalid pattern");
+        Serial.println("Invalid pattern");
       }
     } else {
-      Console.println("Invalid state, 1-12 only");
+      Serial.println("Invalid state, 1-12 only");
     }
   } else {
-    Console.println("Syntax error: use Cp:<state>:<pattern>     (<state>: 0-9, <pattern>: 0-9)\n");
+    Serial.println("Syntax error: use Cp:<state>:<pattern>     (<state>: 0-9, <pattern>: 0-9)");
+    Serial.println();
   }
 }
 
@@ -2508,69 +2513,69 @@ void showConfiguration() {
   char output[MAX_OUTPUT_LEN];
   memset(output, '\0', sizeof(output));
 
-  Console.print("Identifier           : ");
-  Console.println(LedConfig.identifier);
+  Serial.print("Identifier           : ");
+  Serial.println(LedConfig.identifier);
 
-  Console.print("LEDs per channel     : ");
-  Console.println(LedConfig.numLedsPerChannel);
+  Serial.print("LEDs per channel     : ");
+  Serial.println(LedConfig.numLedsPerChannel);
 
-  Console.print("Groups per channel   : ");
-  Console.println(LedConfig.numGroupsPerChannel);
+  Serial.print("Groups per channel   : ");
+  Serial.println(LedConfig.numGroupsPerChannel);
 
-  Console.print("Amount of channels   : ");
-  Console.println(LedConfig.numChannels);
+  Serial.print("Amount of channels   : ");
+  Serial.println(LedConfig.numChannels);
 
-  Console.print("Spacer width         : ");
-  Console.println(LedConfig.spacerWidth);
+  Serial.print("Spacer width         : ");
+  Serial.println(LedConfig.spacerWidth);
 
-  Console.print("Start Offset         : ");
-  Console.println(LedConfig.startOffset);
+  Serial.print("Start Offset         : ");
+  Serial.println(LedConfig.startOffset);
 
-  Console.print("Blinking interval    : ");
-  Console.println(LedConfig.blinkinterval);
+  Serial.print("Blinking interval    : ");
+  Serial.println(LedConfig.blinkinterval);
 
-  Console.print("Update interval      : ");
-  Console.println(LedConfig.updateinterval);
+  Serial.print("Update interval      : ");
+  Serial.println(LedConfig.updateinterval);
 
-  Console.print("Animate interval     : ");
-  Console.println(LedConfig.animateinterval);
+  Serial.print("Animate interval     : ");
+  Serial.println(LedConfig.animateinterval);
 
-  Console.print("Animation fading     : ");
-  Console.println(LedConfig.fadingAnimation);
+  Serial.print("Animation fading     : ");
+  Serial.println(LedConfig.fadingAnimation);
 
-  Console.print("2-step fade (in/out) : ");
-  Console.print(LedConfig.fading2StepIn);
-  Console.print(" / ");
-  Console.println(LedConfig.fading2StepOut);
+  Serial.print("2-step fade (in/out) : ");
+  Serial.print(LedConfig.fading2StepIn);
+  Serial.print(" / ");
+  Serial.println(LedConfig.fading2StepOut);
 
-  Console.print("Channel order        : ");
+  Serial.print("Channel order        : ");
   for (int i = 0; i < NUM_CHANNELS_MAX; i++) {
-    Console.print(LedConfig.channelOrder[i]);
+    Serial.print(LedConfig.channelOrder[i]);
   }
-  Console.println();
+  Serial.println();
 
-  Console.println("LED Mode             : RGB-only (W channel = 0)");
+  Serial.println("LED Mode             : RGB-only (W channel = 0)");
 
-  Console.print("Overall brightness   : ");
-  Console.println(LedConfig.brightness);
+  Serial.print("Overall brightness   : ");
+  Serial.println(LedConfig.brightness);
 
-  Console.println();
-  Console.print("Channel              : | ");
+  Serial.println();
+  Serial.print("Channel              : | ");
   for (uint8_t channel=0; channel<NUM_CHANNELS_MAX; channel++) {
     sprintf(output, "%2d | ", channel+1);
-    Console.print(output);
+    Serial.print(output);
   }
-  Console.println();
-  Console.print("GPIO-PIN             : | ");
+  Serial.println();
+  Serial.print("GPIO-PIN             : | ");
   for (uint8_t channel=0; channel<NUM_CHANNELS_MAX; channel++) {
     sprintf(output, "%02d | ", LedConfig.channelGPIOpin[channel] );
-    Console.print(output);
+    Serial.print(output);
   }
-  Console.println();
+  Serial.println();
 
-  Console.println();
-  Console.println("Color state          : RRGGBB    Pattern:");
-  Console.println("            0        : 000000       0 (fixed)");
+  Serial.println();
+  Serial.println("Color state          : RRGGBB    Pattern:");
+  Serial.println("            0        : 000000       0 (fixed)");
   for (int state=1; state<=9; state++) {
     sprintf(output, "            %d        : %02X%02X%02X      %2d",
       state,
@@ -2579,10 +2584,10 @@ void showConfiguration() {
       LedConfig.state_color[state].blue,
       LedConfig.state_pattern[state]
     );
-    Console.println(output);
+    Serial.println(output);
   }
 
-  Console.println();
+  Serial.println();
 }
 
 /**
@@ -2594,7 +2599,7 @@ char* readFile(const char * path) {
   CPULED(0x00,0x00,0x80);
   File fileH = LittleFS.open(F(path), "r");
   if (!fileH) {
-    Console.print("NOTE: Failed opening confgfile\n" );
+    Serial.println("NOTE: Failed opening confgfile");
     return 0;
   }
 
@@ -2602,7 +2607,7 @@ char* readFile(const char * path) {
   if (fileSize > 0) {
     char *Data = new char[fileSize+1];
     if (Data == nullptr) {
-      Console.println("NOTE: Memory allocation failed!");
+      Serial.println("NOTE: Memory allocation failed!");
       fileH.close();
       return 0;
     }
@@ -2612,7 +2617,7 @@ char* readFile(const char * path) {
     fileH.close();
     return Data;
   } else {
-      Console.println("NOTE: File is empty!");
+      Serial.println("NOTE: File is empty!");
       return nullptr;  // Return nullptr if the file is empty
   }
 }
@@ -2628,12 +2633,12 @@ bool writeFile(const char * path, const char * Data, size_t DataSize) {
   CPULED(0x00,0x00,0x80);
   File fileH = LittleFS.open(F(path), "w");
   if (!fileH) {
-    Console.print("* Opening Failed\n" );
+    Serial.println("* Opening Failed");
     return false;
   }
   size_t bytesWritten = fileH.write((const uint8_t*)Data, DataSize);
   if (bytesWritten != DataSize) {
-    Console.print("* Write Failed\n");
+    Serial.println("* Write Failed");
     fileH.close();
     return false;
   }
@@ -2695,7 +2700,7 @@ bool loadConfiguration() {
 
       // Critical: Ensure total groups doesn't exceed MAX_GROUPS
       if (LedConfig.numChannels * LedConfig.numGroupsPerChannel > MAX_GROUPS) {
-        Console.println("WARNING: numChannels * numGroupsPerChannel exceeds MAX_GROUPS!");
+        Serial.println("WARNING: numChannels * numGroupsPerChannel exceeds MAX_GROUPS!");
         LedConfig.numChannels = NUM_CHANNELS_DEFAULT;
         LedConfig.numGroupsPerChannel = NUM_GROUPS_PER_CHANNEL_DEFAULT;
         needsCorrection = true;
@@ -2731,16 +2736,18 @@ bool loadConfiguration() {
         needsCorrection = true;
       }
 
-      Console.println("Checksum matches, configuration loaded.");
+      Serial.println("Checksum matches, configuration loaded.");
       if (needsCorrection) {
-        Console.println("WARNING: Some Values were out of range and corrected to defaults.");
-        Console.println("Use 'S' to save corrected configuration.\n");
+        Serial.println("WARNING: Some Values were out of range and corrected to defaults.");
+        Serial.println("Use 'S' to save corrected configuration.");
+        Serial.println();
       } else {
-        Console.println();
+        Serial.println();
       }
       return true;
     } else {
-      Console.println("Checksum mismatch, configuration is corrupted!\n");
+      Serial.println("Checksum mismatch, configuration is corrupted!");
+      Serial.println();
       delete[] buffer;  // Free memory
       return false;
     }
