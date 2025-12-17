@@ -184,7 +184,7 @@ Ca:n          - Set animate interval (10-1000 ms)
 Ci:n          - Set brightness intensity (10-255)
 Cf:a:i:o      - Configure fading animation + two-step fade-in/out percentages (0-255 each)
 Cc:s:RRGGBB   - Set color for state s (hex)
-Cp:s:pattern  - Set pattern for state s (0-9, pattern 0-12)
+Cp:s:pattern  - Set pattern for state s (1-9, pattern 0-12)
 Cz:order      - Set channel order (N=12345678 or custom sequence)
 C4:yes/no     - Toggle RGBW mode
 Cx:ch:pin     - Set GPIO pin per channel
