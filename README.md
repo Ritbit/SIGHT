@@ -69,7 +69,7 @@ Get your SIGHT controller running in just 4 simple steps:
 
 3. **Basic Commands**
    - Type `H` and press Enter to see help
-   - Try `T:1:1` to set first group to green
+   - Try `T1:1` to set first group to green
    - Try `X` to clear all groups
    - Use `I` for the combined info/status page
 
@@ -80,9 +80,9 @@ Get your SIGHT controller running in just 4 simple steps:
 **Example First Session:**
 ```
 > H              # Show help
-> T:1:1          # Set group 1 to green (state 1)
-> T:2:2          # Set group 2 to orange (state 2) 
-> Q              # Check status
+> T1:1           # Set group 1 to green (state 1)
+> T2:2           # Set group 2 to orange (state 2) 
+> I              # Check status
 > S              # Save configuration
 ```
 
@@ -108,22 +108,24 @@ Configuration loaded successfully.
 Initialization done..,
 
 Identifier           : SIGHT v1.9
-LEDs per shelf       : 57
-Groups per shelf     : 6
-Amount of shelves    : 8
+LEDs per channel     : 57
+Groups per channel   : 6
+Amount of channels   : 8
 Spacer width         : 1
 Start Offset         : 1
 Blinking interval    : 200
 Update interval      : 25
 Animate interval     : 150
-Fading factor        : 48
-Alt. shelf order     : False
+Animation fading     : 48
+2-step fade (in/out) : 50 / 50
+Channel order        : 12345678
+LED Mode             : RGB-only (W channel = 0)
 Startup animation    : True
 Command echo         : False
 Overall brightness   : 255
 
-Shelve LedStrip      :  1 |  2 |  3 |  4 |  5 |  6 |  7 |  8
-GPIO-PIN             : 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09
+Channel              : |  1 |  2 |  3 |  4 |  5 |  6 |  7 |  8 |
+GPIO-PIN             : | 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09
 
 Color state 1        : 008000 (RRGGBB) Pattern: 0
 Color state 2        : FF8C00 (RRGGBB) Pattern: 0
@@ -161,10 +163,10 @@ W             - Shows welcome/startup loop
 
 ### Group Control Commands
 ```
-T:n:s         - Set group n to state s (0-9)
+Tnn:s         - Set group nn to state s (0-9)
 M:ssssss      - Set multiple groups at once by providing a list of states (e.g. M:12345)
 A:s           - Set all groups to state s (0-9)
-Pgg:s:ppp     - Set group state progress (gg=group 1-48, s=state 0-9, ppp=percent 0-100)
+Pgg:s:ppp     - Set group state with progress (gg=group, s=state 0-9, ppp=percent 0-100)
 X             - Clear all groups (set to state 0)
 ```
 
@@ -192,7 +194,7 @@ Cd            - Reset to default configuration
 ## Command Examples
 
 **Set a status for a group:**
-- Set group 1 to status 1: `T:1:1`
+- Set group 1 to status 1: `T1:1`
 
 **Set status for multiple groups:**
 - Send status for the first 8 groups: `M:14262435`
@@ -204,7 +206,7 @@ Cd            - Reset to default configuration
 - Clear all: `X`
 
 **Check status:**
-- Combined info (uptime, RAM, group states): `I`
+- System info (uptime, RAM, group states): `I`
 
 **Configuration backup/restore:**
 - Export config: `Se`
@@ -271,8 +273,7 @@ Version 1.8 included significant improvements:
 - **System info** command (I) showing RAM/Flash usage and uptime
 - **Config backup/restore** via hex export/import (Se/Li commands)
 - **Statistics tracking** (uptime, command count, error count)
-- **Quick status summary** (Q command) showing active groups per state
-- **Improved group state display** (G command) with percentage indicators
+- **Improved system info** (I command) showing active groups per state with percentage indicators
 - **Brightness safety limits** (10-255) with warnings above 200
 - **Buffer overflow protection** and comprehensive input validation
 - **Improved error messages** showing actual values
@@ -355,10 +356,10 @@ Cw:1                    # 1 LED spacer between groups
 ```
 **Command Sequence**:
 ```
-> T:1:1                 # Zone 1 - Item ready (green)
-> T:2:2                 # Zone 2 - In progress (orange)
-> T:3:3                 # Zone 3 - Priority (red)
-> T:4:1                 # Zone 4 - Complete (green)
+> T1:1                  # Zone 1 - Item ready (green)
+> T2:2                  # Zone 2 - In progress (orange)
+> T3:3                  # Zone 3 - Priority (red)
+> T4:1                  # Zone 4 - Complete (green)
 > S                     # Save configuration
 ```
 
@@ -391,8 +392,7 @@ Cc:3:FF0000             # Red for full
 **Command Sequence**:
 ```
 > M:132131213121        # Set aisle status pattern
-> Q                     # Quick status summary
-> G                     # Detailed aisle status
+> I                     # System info and group status
 ```
 
 ### Example 4: Multi-Stage Process Control
@@ -409,9 +409,9 @@ Cb:500                  # 500ms blink interval
 **Command Sequence**:
 ```
 > A:0                   # Clear all stages
-> T:1:1                 # Start stage 1
-> T:2:2                 # Start stage 2
-> T:3:3                 # Start stage 3
+> T1:1                  # Start stage 1
+> T2:2                  # Start stage 2
+> T3:3                  # Start stage 3
 > X                     # Emergency stop/clear
 ```
 
@@ -433,10 +433,10 @@ Ca:200                 # 200ms animation speed
 ```
 **Real-time Updates**:
 ```
-> T:1:1                 # KPI 1: Excellent
-> T:2:2                 # KPI 2: Good
-> T:3:3                 # KPI 3: Warning
-> T:4:4                 # KPI 4: Critical
+> T1:1                  # KPI 1: Excellent
+> T2:2                  # KPI 2: Good
+> T3:3                  # KPI 3: Warning
+> T4:4                  # KPI 4: Critical
 ```
 
 ### Configuration Backup Examples
@@ -449,7 +449,7 @@ OUTPUT: 53494748542D434... (copy this string)
 
 **Import Saved Setup**:
 ```
-> Li:53494748542D434...  # Paste the hex string
+> Li:CONFIG:53494748542D434...  # Paste the hex string
 Configuration imported successfully
 > S                     # Save to flash
 ```

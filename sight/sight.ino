@@ -166,7 +166,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 // Uncomment ONE of these lines:
 
 // For WS2812B RGB strips (3 bytes per LED)
-// #define USE_RGB_LEDS
+//#define USE_RGB_LEDS
 
 // For WS2813B-RGBW, SK6812 RGBW strips (4 bytes per LED)
 #define USE_RGBW_LEDS
@@ -1099,7 +1099,8 @@ void checkInput(char input[MAX_INPUT_LEN]) {
           } else {
             Serial.print("ERROR: Invalid Group-ID '");
             Serial.print(groupID);
-            Serial.println("', use 1-48");
+            Serial.print("', use 1-");
+            Serial.println(MAX_GROUPS);
           }
         } else
           Serial.println("Syntax error: Use T<Group-ID>:<STATE>");
@@ -1129,10 +1130,13 @@ void checkInput(char input[MAX_INPUT_LEN]) {
           } else {
             Serial.print("ERROR: Invalid Group-ID '");
             Serial.print(groupID);
-            Serial.println("', use 1-48");
+            Serial.print("', use 1-");
+            Serial.println(MAX_GROUPS);
           }
         } else {
-          Serial.println("Syntax error: Use Pgg:s:ppp (gg=group 1-48, s=state 0-9, ppp=percent 0-100)");
+          Serial.print("Syntax error: Use Pgg:s:ppp (gg=group 1-");
+          Serial.print(MAX_GROUPS);
+          Serial.println(", s=state 0-9, ppp=percent 0-100)");
         }
         break;
 
@@ -1615,7 +1619,7 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
   int pattern = 0, channelIndex = 0, groupIndex = 0, startLEDIndex = 0, groupWidth = 0;
 
   pattern = LedConfig.state_pattern[state];
-  channelIndex = floor(group / LedConfig.numGroupsPerChannel);
+  channelIndex = group / LedConfig.numGroupsPerChannel;
 
   // Use manual channel order mapping
   if (channelIndex >= 0 && channelIndex < 8) {
@@ -1636,17 +1640,13 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
   }
 
   // for percentage
-  bool isPartialFill = false;
+  bool isPartialFill = (Pct < 100);
   if (Pct < 100) {
     float factor = float(Pct) / 100.0f;
     groupWidth = round(float(groupWidth) * factor);
     if (groupWidth == 0 && Pct > 0) {
       groupWidth = 1;  // only no leds on 0%
     }
-  }
-
-  if (groupWidth < fullGroupWidth) {
-    isPartialFill = true;
   }
 
   switch (pattern) {
@@ -2341,7 +2341,7 @@ void setLedStripGPIO(char *Value) {
   if (Value[1] == ':') {
     uint8_t channel = Value[0] - '0' -1;
 
-    if (channel >= 0 && channel < NUM_CHANNELS_DEFAULT) {
+    if (channel < NUM_CHANNELS_DEFAULT) {  // channel is uint8_t, always >= 0
       char *GPIO_RAW = Value + 2;
       uint8_t GPIO_PIN = strtoul(GPIO_RAW, NULL, 16);
       if ( GPIO_PIN > GPIO_PIN_MIN && GPIO_PIN <= GPIO_PIN_MAX) {
@@ -2366,7 +2366,7 @@ void setLedStripGPIO(char *Value) {
 
         LedConfig.channelGPIOpin[channel] = GPIO_PIN;
         Serial.print("GPIO-PIN for channel ");
-        Serial.print(channel);
+        Serial.print(channel + 1);  // Display 1-based channel number
         Serial.print(" is set to : ");
         Serial.print(LedConfig.channelGPIOpin[channel]);
         Serial.println();
@@ -2380,7 +2380,7 @@ void setLedStripGPIO(char *Value) {
       Serial.println(" only.");
     }
   } else {
-      Serial.println("Syntax error: use Cx:<channel>:<GPIO-PIN>     (<channel: 1-");
+      Serial.print  ("Syntax error: use Cx:<channel>:<GPIO-PIN>     (<channel>: 1-");
       Serial.print  (NUM_CHANNELS_MAX);
       Serial.print  (", <GPIO-PIN>: ");
       Serial.print  (GPIO_PIN_MIN);
@@ -2471,6 +2471,7 @@ void resetToDefaults() {
   LedConfig.blinkinterval = BLINK_INTERVAL;
   LedConfig.updateinterval = UPDATE_INTERVAL;
   LedConfig.brightness = BRIGHTNESS;
+  LedConfig.animateinterval = ANIMATE_INTERVAL;
   LedConfig.fadingAnimation = FADING;
   LedConfig.fading2StepIn = FADING_2STEP_IN;
   LedConfig.fading2StepOut = FADING_2STEP_OUT;
