@@ -97,7 +97,7 @@ The startup sequence output will look as follows:
 ```
 -=[ Shelf Indicators for Guided Handling Tasks ]=-
 
-SIGHT Version  : 1.9
+SIGHT Version  : 1.9.1
 MicroController : WAVESHARE_RP2040_ZERO
 MCU-Serial      : E6632C85931E832C
 
@@ -121,7 +121,7 @@ Animation fading     : 48
 Channel order        : 12345678
 LED Mode             : RGB-only (W channel = 0)
 Startup animation    : True
-Command echo         : False
+Local echo           : Enabled
 Overall brightness   : 255
 
 Channel              : |  1 |  2 |  3 |  4 |  5 |  6 |  7 |  8 |
@@ -188,6 +188,7 @@ Cp:s:pattern  - Set pattern for state s (1-9, pattern 0-12)
 Cz:order      - Set channel order (N=12345678 or custom sequence)
 C4:yes/no     - Toggle RGBW mode
 Cx:ch:pin     - Set GPIO pin per channel
+Ce:Y/N        - Enable/disable local echo (character echo while typing)
 Cd            - Reset to default configuration
 ```
 
@@ -241,6 +242,16 @@ The hardcoded animations are:
 
 All settings for name, timing, colors and patterns can be saved to flash, and will automatically be loaded upon boot.
 
+## Version 1.9.1 Features
+
+Version 1.9.1 includes bug fixes and improvements:
+
+- **Fixed serial input** to accept CR, LF, or CR+LF line endings (works with any terminal)
+- **Configurable local echo** (Ce command) - disable for API/automated control, enable for interactive use
+- **Improved command line display** using carriage return (no duplicate lines while typing)
+- **Build-time validation** ensures firmware is compiled for RP2040 architecture
+- **Code cleanup** removed duplicate echo settings, fixed typos
+
 ## Version 1.9 Features
 
 Version 1.9 builds upon the solid foundation of v1.8 with additional enhancements:
@@ -268,7 +279,7 @@ Version 1.8 included significant improvements:
 
 - **Comprehensive config validation** on load and runtime
 - **Watchdog timer** for system stability (8-second timeout with auto-reboot)
-- **Command echo** support for debugging/logging (Ce command)
+- **Local echo** support for interactive/API use (Ce command)
 - **Version info** command (V) with build date and strip type
 - **System info** command (I) showing RAM/Flash usage and uptime
 - **Config backup/restore** via hex export/import (Se/Li commands)

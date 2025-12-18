@@ -1,9 +1,17 @@
 /*
 Name        : SIGHT (Shelf Indicators for Guided Handling Tasks)
-Version     : 1.9
-Date        : 2025-12-02
+Version     : 1.9.1
+Date        : 2025-12-18
 Author      : Bas van Ritbergen <bas.vanritbergen@adyen.com> / bas@ritbit.com
 Description : LED strip controller with animations, RGBW support, and comprehensive safety features.
+
+              v1.9.1 improvements:
+              - Fixed serial input to accept CR, LF, or CR+LF line endings
+              - Added configurable local echo (Ce command) for interactive/API use
+              - Improved command line echo to use carriage return (no duplicate lines)
+              - Added build-time validation for RP2040 architecture
+              - Fixed typo in help text (CPIO -> GPIO)
+              - Code cleanup: removed duplicate echo settings
 
               v1.9 improvements:
               - Renamed shelf/strip/output to channel to make it more generic
@@ -52,11 +60,12 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 */
-
+// Current firmware version
+#define VERSION "1.9.1"
 
 // Maximum length for system identifier and system default name
 #define IDENTIFIER_MAX_LENGTH 16
-#define IDENTIFIER_DEFAULT "SIGHT v1.9"
+#define IDENTIFIER_DEFAULT "SIGHT v"VERSION
 
 // Configuration identifier for validation and versioning
 #define CONFIG_IDENTIFIER "SIGHT-CFG1.9"
@@ -156,8 +165,8 @@ enum AnimationPattern {
 // Input Data from serial is stored in an array for further processing and editing.
 #define HISTORY_SIZE 20
 
-// Enable/disable command echo for debugging
-#define COMMAND_ECHO false
+// Enable/disable local echo (character echo while typing on command line)
+#define LOCAL_ECHO true
 
 // System status LED configuration (dimmed brightness at 64 for visibility)
 #define CPULED_STATUS_BRIGHTNESS 32  // Dimmed brightness for status indicators
@@ -185,10 +194,10 @@ enum AnimationPattern {
 // Uncomment ONE of these lines:
 
 // For WS2812B RGB strips (3 bytes per LED)
-//#define USE_RGB_LEDS
+#define USE_RGB_LEDS
 
 // For WS2813B-RGBW, SK6812 RGBW strips (4 bytes per LED)
-#define USE_RGBW_LEDS
+//#define USE_RGBW_LEDS
 
 
 // Auto-configure based on strip type
@@ -232,8 +241,6 @@ enum AnimationPattern {
 // ###########################################################################
 // No configurable items below
 
-// Current firmware version
-#define VERSION "1.9"
 
 // Buffer size configuration (input/output string limits)
 #define MAX_INPUT_LEN 512
@@ -251,7 +258,17 @@ enum AnimationPattern {
 #include "FastLED_RGBW.h"       // Add RGBW support for FastLED  
 #include "hardware/watchdog.h"  // Core watchdog timer
 #include <MicrocontrollerID.h>  // Figure MCU type/serial
-char mcuId[41];
+
+// ============================================================================
+// Build-time validation: Ensure compiling for RP2040
+// ============================================================================
+#if !defined(ARDUINO_ARCH_RP2040)
+  #error "This firmware requires an RP2040-based board. Select the correct board in Arduino IDE."
+#endif
+
+// If no FS space is allocated, LittleFS will fail to mount and configuration will not be saved/loaded
+// To fix: Arduino IDE -> Tools -> Flash Size -> Select option with 'FS'
+//         Example: "2MB (Sketch: 1984KB, FS: 64KB)"
 
 // Declare LedStrip control arrays
 #if LED_TYPE == 4
@@ -265,6 +282,8 @@ char mcuId[41];
   #define ZERO_W(led)  // Do nothing for RGB mode (no W channel)
   using LedPixel = CRGB;
 #endif
+
+char mcuId[41];
 
 // Config Data is conviently stored in a struct (to easy store and retrieve from EEPROM/Flash)
 // Set defaults, they will be overwritten by load from EEPROM
@@ -283,7 +302,7 @@ struct LedData {
   uint16_t                   fading2StepIn = FADING_2STEP_IN;
   uint16_t                  fading2StepOut = FADING_2STEP_OUT;
   bool                    startupAnimation = STARTUP_ANIMATION;
-  bool                         CommandEcho = COMMAND_ECHO;
+  bool                           localEcho = LOCAL_ECHO;
   uint8_t channelGPIOpin[NUM_CHANNELS_MAX] = {2,3,4,5,6,7,8,9};
   uint8_t                state_pattern[12] = {0,0,0,0,0,1,1,1,1,0};
   CRGB                     state_color[10] = {CRGB::Black, COLOR_STATE_1, COLOR_STATE_2, COLOR_STATE_3, COLOR_STATE_4, COLOR_STATE_1, COLOR_STATE_2, COLOR_STATE_3, COLOR_STATE_4, CRGB::White};
@@ -747,23 +766,25 @@ void handleSerialInput() {
       continue;
     }
 
-    lastCharWasCR = (c == '\n');
-
     switch (c) {
       case '\x03':
         Serial.println();
         Serial.println("CANCELLED");
         resetInputBuffer();
         Serial.print("> ");
+        lastCharWasCR = false;
         break;
       case '\r':
+        // CR received - execute command, mark that we saw CR
+        acceptCurrentLine();
+        lastCharWasCR = true;
         break;
       case '\n':
-        if (c == '\n' && !lastCharWasCR) {
-          break;
+        // LF received - only execute if not preceded by CR (to handle \r\n)
+        if (!lastCharWasCR) {
+          acceptCurrentLine();
         }
         lastCharWasCR = false;
-        acceptCurrentLine();
         break;
       case 0x7F:
         deleteCharacter(false);
@@ -795,21 +816,31 @@ bool isPrintable(const char c) {
 
 /**
  * Print current prompt and buffer with cursor positioning
+ * Only outputs if localEcho is enabled
+ * Uses carriage return to overwrite current line (no newlines while typing)
  */
 void redrawInputLine() {
-  Serial.println();
-  Serial.print("> ");
+  if (!LedConfig.localEcho) return;
+  
+  // Carriage return to beginning of line, then clear line and redraw
+  Serial.print("\r> ");
   Serial.print(inputBuffer);
+  
+  // Clear any leftover characters from previous longer input
   if (inputLength < lastRenderedLength) {
     for (uint16_t i = inputLength; i < lastRenderedLength; i++) {
       Serial.print(' ');
     }
+    // Move cursor back after clearing
+    for (uint16_t i = inputLength; i < lastRenderedLength; i++) {
+      Serial.print('\b');
+    }
   }
   lastRenderedLength = inputLength;
-  Serial.println();
-  Serial.print("> ");
-  for (uint16_t i = 0; i < cursorPosition && i < inputLength; i++) {
-    Serial.print(inputBuffer[i]);
+  
+  // Position cursor correctly (move back from end to cursor position)
+  for (uint16_t i = cursorPosition; i < inputLength; i++) {
+    Serial.print('\b');
   }
 }
 
@@ -969,11 +1000,6 @@ void checkInput(char input[MAX_INPUT_LEN]) {
   char command = input[0];
   char *Data = input + 1;
 
-  // Echo Command if enabled (useful for debugging/logging)
-  if (LedConfig.CommandEcho) {
-    Serial.print("CMD> ");
-    Serial.println(input);
-  }
 
   // Increment Command counter
   CommandCount++;
@@ -1526,11 +1552,12 @@ void showHelp() {
   Serial.println(") [for colorblind assist]");
   Serial.println("  Cz:<order>                    Set channel order (N=standard 12345678, or custom like 43215678)");
   Serial.println("  C4:<yes/true/no/false>        Set RGBW leds (4bytes) instead of RGB (3bytes) (False/True)");
-  Serial.print  ("  Cx:<channel>:<cpio-pin>       Set CPIO pin (");
+  Serial.print  ("  Cx:<channel>:<gpio-pin>       Set GPIO pin (");
   Serial.print  (GPIO_PIN_MIN);
   Serial.print  ("-");
   Serial.print  (GPIO_PIN_MAX);
   Serial.println(") per channel (1-8)");
+  Serial.println("  Ce:<Y/N>                      Enable/disable local echo (character echo while typing)");
   Serial.println("  Cd                            Reset all settings to factory defaults");
   Serial.println();
   Serial.println();
@@ -2309,18 +2336,19 @@ void setConfigParameters(char *Data) {
         }
         break;
 
-      // Toggle Command echo
+      // Toggle local echo (character echo while typing)
       case 'e':
         if (*Value == 'N' or *Value == 'n' or *Value == 'F' or *Value == 'f' or *Value == '0') {
-          LedConfig.CommandEcho = false;
-          Serial.println("Command echo         : Disabled");
+          LedConfig.localEcho = false;
+          Serial.println("Local echo           : Disabled");
         } else if (*Value == 'Y' or *Value == 'y' or *Value == 'T' or *Value == 't' or *Value == '1') {
-          LedConfig.CommandEcho = true;
-          Serial.println("Command echo         : Enabled");
+          LedConfig.localEcho = true;
+          Serial.println("Local echo           : Enabled");
         } else {
           Serial.println("Invalid Value, use Y/N or 1/0");
         }
         break;
+
       // Set color-pattern (colorblind assist)
       case 'p':
         setLedstatePattern(Value);
@@ -2529,6 +2557,7 @@ void resetToDefaults() {
   LedConfig.channelGPIOpin[5] = 7;
   LedConfig.channelGPIOpin[6] = 8;
   LedConfig.channelGPIOpin[7] = 9;
+  LedConfig.localEcho = LOCAL_ECHO;
 }
 
 /**
@@ -2584,6 +2613,9 @@ void showConfiguration() {
 
   Serial.print("Overall brightness   : ");
   Serial.println(LedConfig.brightness);
+
+  Serial.print("Local echo           : ");
+  Serial.println(LedConfig.localEcho ? "Enabled" : "Disabled");
 
   Serial.println();
   Serial.print("Channel              : | ");
@@ -2860,7 +2892,7 @@ void StartupLoop() {
   CPULED(0x00,0x00,0x80);
 
   // Green closing [->><<-]
-  uint8_t DELAY (LedConfig.numLedsPerChannel / 10);
+  uint8_t DELAY = (LedConfig.numLedsPerChannel / 10);
   CRGB color = 0x00FF00;
   for(int i = 0; i < LedConfig.numLedsPerChannel/2; i+=1) {
     for(int n = 0; n < LedConfig.numChannels; n++) {
