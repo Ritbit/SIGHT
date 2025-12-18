@@ -1310,10 +1310,10 @@ void checkInput(char input[MAX_INPUT_LEN]) {
 
           for(int Index = 0; Index < LedConfig.numChannels; Index++) {
             // Use manual channel order mapping
-            strip = LedConfig.channelOrder[Index] - 1;
+            int channelIdx = LedConfig.channelOrder[Index] - 1;
 
             Serial.print("Channel ");
-            Serial.print(strip + 1);
+            Serial.print(channelIdx + 1);
             Serial.print(" (Groups ");
             sprintf(output, "%2d",Index*LedConfig.numGroupsPerChannel+1);
             Serial.print(output);
