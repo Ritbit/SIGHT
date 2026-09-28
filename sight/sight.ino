@@ -1,9 +1,15 @@
 /*
 Name        : SIGHT (Shelf Indicators for Guided Handling Tasks)
-Version     : 1.10
+Version     : 1.11
 Date        : 2025-12-18
 Author      : Bas van Ritbergen <bas.vanritbergen@adyen.com> / bas@ritbit.com
 Description : LED strip controller with animations, RGBW support, and comprehensive safety features.
+
+              v1.11 improvements:
+              - Replaced raw-struct persistence (Se/Li:CONFIG:, flash save/
+                load) with an explicit field-wise wire format (CONFIG_WIRE_SIZE), independent of compiler layout/padding
+              - Reboot-required config changes (Cl, Cx) now interactively
+                ask to save and reboot (Y/N) instead of just printing a notice; nothing is forced automatically
 
               v1.10 improvements:
               - Fixed group-ID truncation (uint16_t end-to-end) and undefined
@@ -59,7 +65,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 */
 // Current firmware version
-#define VERSION "1.10"
+#define VERSION "1.11"
 
 // Maximum length for system identifier and system default name
 #define IDENTIFIER_MAX_LENGTH 16
@@ -70,6 +76,12 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 // and checked on load/import. Bump it whenever the LedData layout or the
 // meaning of an existing field changes, so an incompatible saved/imported
 // struct is detected and rejected instead of being silently misinterpreted.
+// NOT tied 1:1 to VERSION -- v1.11 kept this at "SIGHT-CFG1.10" because the
+// LedData layout is unchanged from v1.10 (v1.11 only changed persistence's
+// serialization *mechanism*, raw memcpy -> field-wise encode/decode, which
+// happens to produce byte-identical output for this struct; verified via
+// sizeof(LedData) == CONFIG_WIRE_SIZE == 112, no padding). Only bump this
+// when the actual layout changes, per the comment above.
 #define CONFIG_IDENTIFIER "SIGHT-CFG1.10"
 
 // LED strip configuration (LED count limits and defaults)
@@ -228,10 +240,21 @@ enum AnimationPattern {
   #define LED_TYPE 4
   // LED chipset model
   #define LED_CHIPSET SK6812
-  // LED color byte order
+  // NOTE: this define is NOT actually honored on the wire in RGBW mode.
+  // FastLED.addLeds() below is called with a (CRGB*)-cast CRGBW buffer (see
+  // "RGBW mode: Cast CRGBW* to CRGB*..." further down), so FastLED applies
+  // its color-order swap to what it thinks are plain 3-byte CRGB structs,
+  // never seeing the real 4-byte CRGBW layout. The order actually
+  // transmitted is fixed by CRGBW's own field declaration order in
+  // FastLED_RGBW.h (g, r, b, w), independent of this define. Hardware-
+  // verified with the pulse analyzer (tools/ws2812_pulse_analyzer/):
+  // setting Cc:1:112233 (R=0x11 G=0x22 B=0x33) transmitted bytes
+  // 22 11 33 00 -- i.e. true wire order is G,R,B,W, not R,G,B,W. This
+  // happens to match common SK6812 RGBW wiring, but changing this define
+  // will NOT change the transmitted order; see CODE_REVIEW.md finding 10.
   #define LED_COLOR_ORDER RGB
   // Compilation message for RGBW LEDs
-  #pragma message "Compiling for RGBW LEDs (SK6812, 4 bytes/LED, RGB order)"
+  #pragma message "Compiling for RGBW LEDs (SK6812, 4 bytes/LED, true wire order G,R,B,W -- LED_COLOR_ORDER above is not honored, see comment)"
 // RGB LED configuration (WS2812B)
 #else
   // LED type identifier (3 bytes per LED)
@@ -260,6 +283,24 @@ enum AnimationPattern {
   #define CPULED_GPIO 16
   #warning "CPULED_GPIO defaults to 16, which is only verified correct for the Waveshare RP2040 Zero. Verify/update it for your board."
 #endif
+
+// CPU LED's onboard chip color order. sendRGB_CPULED() bit-bangs this
+// directly (it is a separate, hand-written path from the main strips'
+// FastLED/LED_COLOR_ORDER) and sends whichever order is selected here --
+// there is no auto-detection. The real deployed SIGHT unit is verified
+// (visually and with tools/ws2812_pulse_analyzer/) to want RGB order. Two
+// other physical boards nominally the same model ("Waveshare RP2040
+// Zero") were found to actually want GRB instead: green displayed as
+// red (blue was correct either way, since blue's byte doesn't move
+// between RGB/GRB -- it's the 3rd byte in both). This is genuine
+// board/batch hardware variance in the onboard chip, not a firmware bug.
+// If you swap in a different physical board, re-verify the colors
+// (blue in SYSTEM_STARTUP, green in SYSTEM_NORMAL, red in SYSTEM_ERROR)
+// and change this define if needed -- don't assume every board with the
+// same model name has the same onboard chip order.
+#define CPULED_COLOR_ORDER_RGB 0
+#define CPULED_COLOR_ORDER_GRB 1
+#define CPULED_COLOR_ORDER CPULED_COLOR_ORDER_RGB
 
 // Configuration file path in LittleFS
 #define CONFIG_FILENAME "/config.bin"
@@ -333,6 +374,19 @@ enum AnimationPattern {
 
 char mcuId[41];
 
+// Exact size, in bytes, of the field-wise wire format used to persist/
+// export/import LedData (see encodeConfig()/decodeConfig() further down).
+// Computed from field widths, not sizeof(LedData), so it never depends on
+// this compiler's struct layout/padding/CRGB representation.
+#define CONFIG_WIRE_SIZE (16 + IDENTIFIER_MAX_LENGTH + 2 + 1 + 1 + 1 + 1 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 1 + \
+                           NUM_CHANNELS_MAX + 12 + (10 * 3) + NUM_CHANNELS_MAX)
+// Tripwire: if IDENTIFIER_MAX_LENGTH or NUM_CHANNELS_MAX ever change, this
+// forces a review of encodeConfig()/decodeConfig() (which hardcode field
+// counts/widths) instead of silently drifting out of sync with the macro.
+#if CONFIG_WIRE_SIZE != 112
+  #error "CONFIG_WIRE_SIZE changed -- review encodeConfig()/decodeConfig() field-by-field before updating this check"
+#endif
+
 // Config Data is conviently stored in a struct (to easy store and retrieve from EEPROM/Flash)
 // Set defaults, they will be overwritten by load from EEPROM
 struct LedData {
@@ -366,6 +420,11 @@ char inputBuffer[MAX_INPUT_LEN + 1]; // +1 for null terminator
 uint16_t inputLength = 0;
 uint16_t cursorPosition = 0;
 bool insertMode = true;
+
+// When a config change needs a reboot to fully take effect, we ask the
+// operator whether to save and reboot now rather than doing either
+// automatically. See promptSaveAndReboot() and its handling in checkInput().
+bool pendingRebootConfirm = false;
 
 char commandHistory[HISTORY_SIZE][MAX_INPUT_LEN + 1];
 int historyHead = 0; // Points to the next slot to write
@@ -437,13 +496,20 @@ uint8_t animate_Step[16]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 /**
  * Bound an animate_Step[] element to [0, modulus) atomically with respect to
  * the animateStep() interrupt callback, which only increments these elements.
+ * Returns the bounded value so callers can use it for indexing directly,
+ * instead of re-reading animate_Step[pattern] afterward -- the ISR can fire
+ * again in the gap between this call and a later unprotected read, drifting
+ * the array element 1 past the bound that was just applied here.
  * @param pattern Index into animate_Step[]
  * @param modulus Exclusive upper bound (must be >= 1)
+ * @return The bounded value of animate_Step[pattern]
  */
-inline void boundAnimateStep(uint8_t pattern, uint16_t modulus) {
+inline uint8_t boundAnimateStep(uint8_t pattern, uint16_t modulus) {
   uint32_t interruptStatus = save_and_disable_interrupts();
   animate_Step[pattern] = animate_Step[pattern] % modulus;
+  uint8_t bounded = animate_Step[pattern];
   restore_interrupts(interruptStatus);
+  return bounded;
 }
 
 // ##########################################################################################################
@@ -1054,6 +1120,36 @@ void checkInput(char input[MAX_INPUT_LEN]) {
   // Move to new line after user input
   Serial.println();
 
+  // A reboot-required change asked whether to save and reboot now; this
+  // line answers that prompt instead of being parsed as a normal command.
+  if (pendingRebootConfirm) {
+    if (input[0] == 0) {
+      Serial.println("Save configuration and reboot now to apply the pending change? (Y/N)");
+      return;
+    }
+    pendingRebootConfirm = false;
+    char answer = input[0];
+    if (answer == 'Y' || answer == 'y') {
+      Serial.print("Save configuration: ");
+      if (saveConfiguration()) {
+        Serial.println("Success.");
+        Serial.println("Rebooting controller...");
+        rebootMCU();
+      } else {
+        Serial.println("Failed. Reboot cancelled -- fix the issue, then use 'S' and 'R' manually.");
+      }
+    } else if (answer == 'N' || answer == 'n') {
+      Serial.println("Reboot postponed. Use 'S' then 'R' later to apply the pending change.");
+      return;
+    } else {
+      // Neither Y/N nor a valid command in this context -- the unconditional
+      // return below discards this line rather than parsing it as a normal
+      // command, so the prompt is simply cancelled.
+      Serial.println("Reboot prompt cancelled -- use 'S' then 'R' manually if needed.");
+    }
+    return;
+  }
+
   if (input[0] == 0) {
     return;
   }
@@ -1093,7 +1189,7 @@ void checkInput(char input[MAX_INPUT_LEN]) {
         #ifdef USE_RGBW_LEDS
           Serial.println("RGBW (4 bytes/LED)");
           Serial.println("Chipset          : SK6812");
-          Serial.println("Color Order      : RGB");
+          Serial.println("Color Order      : GRBW (fixed, not LED_COLOR_ORDER-configurable -- see CONTEXT.md)");
         #else
           Serial.println("RGB (3 bytes/LED)");
           Serial.println("Chipset          : WS2812B");
@@ -1119,12 +1215,14 @@ void checkInput(char input[MAX_INPUT_LEN]) {
       // Store current configuration
       case 'S':
         if (Data[0] == 'e' || Data[0] == 'E') {
-          // Se - Export configuration as hex string
+          // Se - Export configuration as hex string (field-wise wire format,
+          // not a raw struct dump -- see encodeConfig())
           Serial.println();
           Serial.println("=== Configuration Export ===");
           Serial.print("CONFIG:");
-          uint8_t* configBytes = (uint8_t*)&LedConfig;
-          for (size_t i = 0; i < sizeof(LedConfig); i++) {
+          uint8_t configBytes[CONFIG_WIRE_SIZE];
+          encodeConfig(LedConfig, configBytes);
+          for (size_t i = 0; i < sizeof(configBytes); i++) {
             if (configBytes[i] < 16) Serial.print("0");
             Serial.print(configBytes[i], HEX);
           }   
@@ -1148,7 +1246,7 @@ void checkInput(char input[MAX_INPUT_LEN]) {
           if (Data[1] == ':' && strncmp(Data+2, "CONFIG:", 7) == 0) {
             char* hexData = Data + 9;
             size_t hexLen = strlen(hexData);
-            size_t expectedLen = sizeof(LedConfig) * 2;
+            size_t expectedLen = CONFIG_WIRE_SIZE * 2;
 
             if (hexLen == expectedLen) {
               // Validate hex characters before importing
@@ -1167,23 +1265,41 @@ void checkInput(char input[MAX_INPUT_LEN]) {
               }
 
               if (validHex) {
-                // Decode into a temporary struct and validate before touching
-                // the live configuration
-                LedData temp;
-                uint8_t* configBytes = (uint8_t*)&temp;
-
-                for (size_t i = 0; i < sizeof(temp); i++) {
+                // Decode the field-wise wire format into a temporary
+                // struct and validate before touching the live configuration
+                uint8_t configBytes[CONFIG_WIRE_SIZE];
+                for (size_t i = 0; i < sizeof(configBytes); i++) {
                   char byteStr[3] = {hexData[i*2], hexData[i*2+1], '\0'};
                   configBytes[i] = (uint8_t)strtol(byteStr, NULL, 16);
                 }
 
-                if (validateConfig(temp)) {
-                  Serial.println("WARNING: Imported configuration contained out-of-range values; corrected to safe defaults.");
-                }
-                LedConfig = temp;
+                LedData temp;
+                if (!decodeConfig(configBytes, sizeof(configBytes), temp)) {
+                  Serial.println("ERROR: Configuration decode failed (corrupt wire format).");
+                  errorCount++;
+                } else {
+                  if (validateConfig(temp)) {
+                    Serial.println("WARNING: Imported configuration contained out-of-range values; corrected to safe defaults.");
+                  }
 
-                Serial.println("Configuration imported successfully!");
-                Serial.println("Use 'S' to save to flash, or 'R' to reboot and discard.");
+                  // FastLED controllers are registered once at boot with the
+                  // running numLedsPerChannel/channelGPIOpin[]; if the import
+                  // changed either, treat it the same as Cl/Cx and ask
+                  // before saving/rebooting instead of only the generic
+                  // save-or-reboot reminder below.
+                  bool rebootNeeded = (temp.numLedsPerChannel != LedConfig.numLedsPerChannel) ||
+                      (memcmp(temp.channelGPIOpin, LedConfig.channelGPIOpin, sizeof(temp.channelGPIOpin)) != 0);
+
+                  LedConfig = temp;
+
+                  Serial.println("Configuration imported successfully!");
+                  if (rebootNeeded) {
+                    Serial.println("NOTE: LED count and/or GPIO pin assignments changed; FastLED controllers are fixed at boot.");
+                    promptSaveAndReboot();
+                  } else {
+                    Serial.println("Use 'S' to save to flash, or 'R' to reboot and discard.");
+                  }
+                }
               }
             } else {
               Serial.print("ERROR: Invalid hex length. Expected ");
@@ -1592,6 +1708,17 @@ bool validateChannelOrder(const char* orderStr, uint8_t* orderArray, uint8_t num
 
 
 /**
+ * Ask the operator whether to save and reboot now, for a config change
+ * that needs a reboot to fully take effect. Never saves or reboots on its
+ * own -- only sets a flag so the next line of input is interpreted as the
+ * Y/N answer (see checkInput()).
+ */
+void promptSaveAndReboot() {
+  pendingRebootConfirm = true;
+  Serial.println("Save configuration and reboot now to apply this change? (Y/N)");
+}
+
+/**
  * Reboot the microcontroller
  * Uses watchdog timer with minimum timeout to force immediate reboot
  */
@@ -1913,7 +2040,8 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
               }
               break;
 
-      case 8: boundAnimateStep(pattern, groupWidth);
+      case 8: {
+              uint8_t step = boundAnimateStep(pattern, groupWidth);
                 // 5 Animate >         [#       ]
                 //                     [ #      ]
                 //                     [  #     ]
@@ -1926,14 +2054,16 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
                 leds[channelIndex][startLEDIndex + i].fadeLightBy(LedConfig.fadingAnimation);
                 ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
-              leds[channelIndex][startLEDIndex + animate_Step[pattern] ] = LedConfig.state_color[state];
-              ZERO_W(leds[channelIndex][startLEDIndex + animate_Step[pattern]]);
+              leds[channelIndex][startLEDIndex + step ] = LedConfig.state_color[state];
+              ZERO_W(leds[channelIndex][startLEDIndex + step]);
               break;
               // if ( i/(groupWidth/2) == 0 )
               //   leds[channelIndex][startLEDIndex+i] = LedConfig.state_color[state];;
               // break;
+              }
 
-      case 9: boundAnimateStep(pattern, groupWidth);
+      case 9: {
+              uint8_t step = boundAnimateStep(pattern, groupWidth);
               // 6 Animate <         [       #]
               //                     [      # ]
               //                     [     #  ]
@@ -1946,11 +2076,13 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
                 leds[channelIndex][startLEDIndex + i].fadeLightBy(LedConfig.fadingAnimation);
                 ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
-              leds[channelIndex][startLEDIndex + groupWidth - animate_Step[pattern] - 1] = LedConfig.state_color[state];
-              ZERO_W(leds[channelIndex][startLEDIndex + groupWidth - animate_Step[pattern] - 1]);
+              leds[channelIndex][startLEDIndex + groupWidth - step - 1] = LedConfig.state_color[state];
+              ZERO_W(leds[channelIndex][startLEDIndex + groupWidth - step - 1]);
               break;
+              }
 
-      case 10: boundAnimateStep(pattern, groupWidth*2);
+      case 10: {
+              uint8_t step = boundAnimateStep(pattern, groupWidth*2);
               // 7 Cyon/Kitt         [#       ]
               //                     [ #      ]
               //                     [  #     ]
@@ -1971,16 +2103,18 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
                 ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
 
-              if (animate_Step[pattern] < groupWidth ) {
-                leds[channelIndex][startLEDIndex + animate_Step[pattern]] = LedConfig.state_color[state];
-                ZERO_W(leds[channelIndex][startLEDIndex + animate_Step[pattern]]);
+              if (step < groupWidth ) {
+                leds[channelIndex][startLEDIndex + step] = LedConfig.state_color[state];
+                ZERO_W(leds[channelIndex][startLEDIndex + step]);
               } else {
-                leds[channelIndex][startLEDIndex + (groupWidth - (animate_Step[pattern] - groupWidth)) - 1] = LedConfig.state_color[state];
-                ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth - (animate_Step[pattern] - groupWidth)) - 1]);
+                leds[channelIndex][startLEDIndex + (groupWidth - (step - groupWidth)) - 1] = LedConfig.state_color[state];
+                ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth - (step - groupWidth)) - 1]);
               }
               break;
+              }
 
-      case 11: boundAnimateStep(pattern, groupWidth/2);
+      case 11: {
+              uint8_t step = boundAnimateStep(pattern, groupWidth/2);
               // 8 Animate ><        [#      #]
               //                     [ #    # ]
               //                     [  #  #  ]
@@ -1989,13 +2123,15 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
                 leds[channelIndex][startLEDIndex + i].fadeLightBy(LedConfig.fadingAnimation);
                 ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
-              leds[channelIndex][startLEDIndex + animate_Step[pattern]] = LedConfig.state_color[state];
-              leds[channelIndex][startLEDIndex+groupWidth - animate_Step[pattern] -1] = LedConfig.state_color[state];
-              ZERO_W(leds[channelIndex][startLEDIndex + animate_Step[pattern]]);
-              ZERO_W(leds[channelIndex][startLEDIndex+groupWidth - animate_Step[pattern] -1]);
+              leds[channelIndex][startLEDIndex + step] = LedConfig.state_color[state];
+              leds[channelIndex][startLEDIndex+groupWidth - step -1] = LedConfig.state_color[state];
+              ZERO_W(leds[channelIndex][startLEDIndex + step]);
+              ZERO_W(leds[channelIndex][startLEDIndex+groupWidth - step -1]);
               break;
+              }
 
-      case 12: boundAnimateStep(pattern, groupWidth/2);
+      case 12: {
+              uint8_t step = boundAnimateStep(pattern, groupWidth/2);
 
               // 9 Animate ><        [   ##   ]
               //                     [  #  #  ]
@@ -2005,11 +2141,12 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
                 leds[channelIndex][startLEDIndex + i].fadeLightBy(LedConfig.fadingAnimation);
                 ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
-              leds[channelIndex][startLEDIndex + (groupWidth/2) - animate_Step[pattern] - 1] = LedConfig.state_color[state];
-              leds[channelIndex][startLEDIndex + (groupWidth/2) + animate_Step[pattern]] = LedConfig.state_color[state];
-              ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth/2) - animate_Step[pattern] - 1]);
-              ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth/2) + animate_Step[pattern]]);
+              leds[channelIndex][startLEDIndex + (groupWidth/2) - step - 1] = LedConfig.state_color[state];
+              leds[channelIndex][startLEDIndex + (groupWidth/2) + step] = LedConfig.state_color[state];
+              ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth/2) - step - 1]);
+              ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth/2) + step]);
               break;
+              }
 
     }
 
@@ -2165,7 +2302,21 @@ void updateSystemStatusLED() {
       break;
   }
 
-  // Apply the color with current brightness
+  // Apply the color with current brightness.
+  //
+  // v1.11 previously tried a "only send if changed" optimization here
+  // (avoid retransmitting an identical frame every loop() iteration).
+  // That is REVERTED: it caused real, reproducible wrong colors on real
+  // hardware (blue/green replaced by red-tinted colors, worse after
+  // typing) across multiple boards, and a follow-up fix (centralizing the
+  // last-sent-color cache in sendRGB_CPULED()) did not resolve it either.
+  // Root cause not fully identified before reverting; unconditionally
+  // sending every time, exactly as in v1.10, is the known-good behavior
+  // confirmed correct on real hardware. Do not reintroduce a skip-if-
+  // unchanged optimization here without hardware re-verification across
+  // multiple physical boards, not just the pulse analyzer (the analyzer
+  // only confirmed bit *timing*, not that the resulting visual color was
+  // correct).
   CPULED(ledColor.nscale8(cpuLedBrightness));
 }
 
@@ -2207,11 +2358,17 @@ void setConfigParameters(char *Data) {
       case 'l':
         ValueInt = strictParseLong(Value);
         if (ValueInt >= NUM_LEDS_PER_CHANNEL_MIN and ValueInt <= NUM_LEDS_PER_CHANNEL_MAX) {
-          Serial.print("LEDs per channel      : " );
-          LedConfig.numLedsPerChannel = ValueInt;
-          Serial.println(LedConfig.numLedsPerChannel);
-          FastLED.clearData();
-          Serial.println("NOTE: FastLED controller lengths are fixed at boot. A reboot ('R') is required for this change to fully take effect.");
+          if (!isValidGeometry((uint16_t)ValueInt, LedConfig.numGroupsPerChannel, LedConfig.spacerWidth, LedConfig.startOffset)) {
+            Serial.println("Invalid: with the current groups/spacer/offset, this LED count would produce an invalid group geometry. Adjust Ct/Cw/Co first.");
+            errorCount++;
+          } else {
+            Serial.print("LEDs per channel      : " );
+            LedConfig.numLedsPerChannel = ValueInt;
+            Serial.println(LedConfig.numLedsPerChannel);
+            FastLED.clearData();
+            Serial.println("NOTE: FastLED controller lengths are fixed at boot.");
+            promptSaveAndReboot();
+          }
         } else {
           Serial.print("Invalid number of leds per channel(");
           Serial.print(NUM_LEDS_PER_CHANNEL_MIN);
@@ -2236,6 +2393,9 @@ void setConfigParameters(char *Data) {
             Serial.print(" exceeds MAX_GROUPS (");
             Serial.print(MAX_GROUPS);
             Serial.println(")!");
+            errorCount++;
+          } else if (!isValidGeometry(LedConfig.numLedsPerChannel, (uint8_t)ValueInt, LedConfig.spacerWidth, LedConfig.startOffset)) {
+            Serial.println("Invalid: with the current LED count/spacer/offset, this many groups would produce an invalid group geometry. Adjust Cl/Cw/Co first.");
             errorCount++;
           } else {
             Serial.print("Groups per channel : " );
@@ -2283,10 +2443,15 @@ void setConfigParameters(char *Data) {
       case 'w':
         ValueInt = strictParseLong(Value);
         if (ValueInt >= 0 and ValueInt <= SPACER_WIDTH_MAX) {
-          Serial.print("Spacer width         : " );
-          LedConfig.spacerWidth = ValueInt;
-          Serial.println(LedConfig.spacerWidth);
-          FastLED.clearData();
+          if (!isValidGeometry(LedConfig.numLedsPerChannel, LedConfig.numGroupsPerChannel, (uint8_t)ValueInt, LedConfig.startOffset)) {
+            Serial.println("Invalid: with the current LED count/groups/offset, this spacer width would produce an invalid group geometry. Adjust Cl/Ct/Co first.");
+            errorCount++;
+          } else {
+            Serial.print("Spacer width         : " );
+            LedConfig.spacerWidth = ValueInt;
+            Serial.println(LedConfig.spacerWidth);
+            FastLED.clearData();
+          }
         } else {
           Serial.print("Invalid space width(0-");
           Serial.print(SPACER_WIDTH_MAX);
@@ -2297,10 +2462,15 @@ void setConfigParameters(char *Data) {
       case 'o':
         ValueInt = strictParseLong(Value);
         if (ValueInt >= 0 and ValueInt <= START_OFFSET_MAX) {
-          Serial.print("Start offset         : " );
-          LedConfig.startOffset = ValueInt;
-          Serial.println(LedConfig.startOffset);
-          FastLED.clearData();
+          if (!isValidGeometry(LedConfig.numLedsPerChannel, LedConfig.numGroupsPerChannel, LedConfig.spacerWidth, (uint8_t)ValueInt)) {
+            Serial.println("Invalid: with the current LED count/groups/spacer, this start offset would produce an invalid group geometry. Adjust Cl/Ct/Cw first.");
+            errorCount++;
+          } else {
+            Serial.print("Start offset         : " );
+            LedConfig.startOffset = ValueInt;
+            Serial.println(LedConfig.startOffset);
+            FastLED.clearData();
+          }
         } else {
           Serial.print("Invalid start offset (0-");
           Serial.print(START_OFFSET_MAX);
@@ -2610,7 +2780,8 @@ void setLedStripGPIO(char *Value) {
           Serial.print(" is set to : ");
           Serial.print(LedConfig.channelGPIOpin[channel]);
           Serial.println();
-          Serial.println("Please note a MCU reboot is required to activate a change in GPIO pin assignments");
+          Serial.println("A MCU reboot is required to activate a change in GPIO pin assignments.");
+          promptSaveAndReboot();
         }
       } else {
         Serial.print("Invalid GPIO-PIN number, use decimal ");
@@ -2918,6 +3089,24 @@ bool writeFile(const char * path, const char * Data, size_t DataSize) {
  * @param cfg Configuration to validate (corrected in place)
  * @return true if any value was out of range and corrected
  */
+/**
+ * Check whether a given LED strip geometry is internally consistent: a
+ * positive segment width, a spacer narrower than the segment, and the last
+ * group fitting within numLedsPerChannel. Shared by validateConfig() and the
+ * live Cl/Ct/Cw/Co setters (setConfigParameters()) so a sequence of
+ * individually-valid runtime commands can't leave LedConfig in a combination
+ * validateConfig() would have rejected.
+ * @return true if the combined geometry is valid, false otherwise
+ */
+bool isValidGeometry(uint16_t numLedsPerChannel, uint8_t numGroupsPerChannel, uint8_t spacerWidth, uint8_t startOffset) {
+  if (numGroupsPerChannel == 0) return false;
+  const uint16_t segmentWidth = numLedsPerChannel / numGroupsPerChannel;
+  const uint32_t lastGroupEnd = (uint32_t)startOffset +
+                                (uint32_t)(numGroupsPerChannel - 1) * segmentWidth +
+                                (uint32_t)(segmentWidth - spacerWidth);
+  return segmentWidth != 0 && spacerWidth < segmentWidth && lastGroupEnd <= numLedsPerChannel;
+}
+
 bool validateConfig(LedData &cfg) {
   bool needsCorrection = false;
 
@@ -2974,17 +3163,11 @@ bool validateConfig(LedData &cfg) {
   // Combined geometry: a complete group must fit inside the configured strip
   // with positive width; otherwise rendering divides by zero or writes
   // out of bounds. Reset the geometry fields as a set when inconsistent.
-  {
-    const uint16_t segmentWidth = cfg.numLedsPerChannel / cfg.numGroupsPerChannel;
-    const uint32_t lastGroupEnd = (uint32_t)cfg.startOffset +
-                                  (uint32_t)(cfg.numGroupsPerChannel - 1) * segmentWidth +
-                                  (uint32_t)(segmentWidth - cfg.spacerWidth);
-    if (segmentWidth == 0 || cfg.spacerWidth >= segmentWidth || lastGroupEnd > cfg.numLedsPerChannel) {
-      cfg.numGroupsPerChannel = NUM_GROUPS_PER_CHANNEL_DEFAULT;
-      cfg.spacerWidth = SPACER_WIDTH_DEFAULT;
-      cfg.startOffset = START_OFFSET;
-      needsCorrection = true;
-    }
+  if (!isValidGeometry(cfg.numLedsPerChannel, cfg.numGroupsPerChannel, cfg.spacerWidth, cfg.startOffset)) {
+    cfg.numGroupsPerChannel = NUM_GROUPS_PER_CHANNEL_DEFAULT;
+    cfg.spacerWidth = SPACER_WIDTH_DEFAULT;
+    cfg.startOffset = START_OFFSET;
+    needsCorrection = true;
   }
 
   if (cfg.blinkinterval < BLINK_INTERVAL_MIN || cfg.blinkinterval > BLINK_INTERVAL_MAX) {
@@ -3081,6 +3264,113 @@ bool validateConfig(LedData &cfg) {
   return needsCorrection;
 }
 
+// Field-wise wire format for LedData (CONFIG_WIRE_SIZE is defined near the
+// LedData struct above), used by both flash persistence
+// (saveConfiguration()/loadConfiguration()) and the Se/Li:CONFIG: hex
+// export/import. Each field is written in a fixed order with an explicit
+// width, instead of memcpy-ing the raw struct, so the format does not
+// depend on this compiler's struct layout/padding/CRGB representation and
+// is stable across firmware builds. Update CONFIG_WIRE_SIZE (and its
+// tripwire) if a field is ever added, removed, or resized here.
+
+static inline void wireWriteU8(uint8_t *buf, size_t &pos, uint8_t v) {
+  buf[pos++] = v;
+}
+static inline void wireWriteU16(uint8_t *buf, size_t &pos, uint16_t v) {
+  buf[pos++] = (uint8_t)(v & 0xFF);
+  buf[pos++] = (uint8_t)((v >> 8) & 0xFF);
+}
+static inline void wireWriteBytes(uint8_t *buf, size_t &pos, const void *src, size_t n) {
+  memcpy(buf + pos, src, n);
+  pos += n;
+}
+static inline uint8_t wireReadU8(const uint8_t *buf, size_t &pos) {
+  return buf[pos++];
+}
+static inline uint16_t wireReadU16(const uint8_t *buf, size_t &pos) {
+  uint16_t v = (uint16_t)buf[pos] | ((uint16_t)buf[pos + 1] << 8);
+  pos += 2;
+  return v;
+}
+static inline void wireReadBytes(const uint8_t *buf, size_t &pos, void *dst, size_t n) {
+  memcpy(dst, buf + pos, n);
+  pos += n;
+}
+
+/**
+ * Encode a LedData struct into the fixed-width field-wise wire format.
+ * @param cfg Configuration to encode
+ * @param buf Output buffer, must be at least CONFIG_WIRE_SIZE bytes
+ * @return Number of bytes written (always CONFIG_WIRE_SIZE)
+ */
+size_t encodeConfig(const LedData &cfg, uint8_t *buf) {
+  size_t pos = 0;
+  wireWriteBytes(buf, pos, cfg.formatId, sizeof(cfg.formatId));
+  wireWriteBytes(buf, pos, cfg.identifier, sizeof(cfg.identifier));
+  wireWriteU16(buf, pos, cfg.numLedsPerChannel);
+  wireWriteU8(buf, pos, cfg.numChannels);
+  wireWriteU8(buf, pos, cfg.numGroupsPerChannel);
+  wireWriteU8(buf, pos, cfg.spacerWidth);
+  wireWriteU8(buf, pos, cfg.startOffset);
+  wireWriteU16(buf, pos, cfg.blinkinterval);
+  wireWriteU16(buf, pos, cfg.animateinterval);
+  wireWriteU16(buf, pos, cfg.updateinterval);
+  wireWriteU16(buf, pos, cfg.brightness);
+  wireWriteU16(buf, pos, cfg.fadingAnimation);
+  wireWriteU16(buf, pos, cfg.fading2StepIn);
+  wireWriteU16(buf, pos, cfg.fading2StepOut);
+  wireWriteU8(buf, pos, cfg.startupAnimation ? 1 : 0);
+  wireWriteU8(buf, pos, cfg.localEcho ? 1 : 0);
+  for (uint8_t i = 0; i < NUM_CHANNELS_MAX; i++) wireWriteU8(buf, pos, cfg.channelGPIOpin[i]);
+  for (uint8_t i = 0; i < 12; i++) wireWriteU8(buf, pos, cfg.state_pattern[i]);
+  for (uint8_t i = 0; i < 10; i++) {
+    wireWriteU8(buf, pos, cfg.state_color[i].r);
+    wireWriteU8(buf, pos, cfg.state_color[i].g);
+    wireWriteU8(buf, pos, cfg.state_color[i].b);
+  }
+  for (uint8_t i = 0; i < NUM_CHANNELS_MAX; i++) wireWriteU8(buf, pos, cfg.channelOrder[i]);
+  return pos;  // always == CONFIG_WIRE_SIZE
+}
+
+/**
+ * Decode the fixed-width field-wise wire format into a LedData struct.
+ * Does not validate ranges -- call validateConfig() on the result before
+ * trusting/using it, same as every other path that produces a LedData.
+ * @param buf Input buffer
+ * @param len Length of buf in bytes; must equal CONFIG_WIRE_SIZE
+ * @param cfg Output configuration
+ * @return true if len matched and decode succeeded, false otherwise
+ */
+bool decodeConfig(const uint8_t *buf, size_t len, LedData &cfg) {
+  if (len != CONFIG_WIRE_SIZE) return false;
+  size_t pos = 0;
+  wireReadBytes(buf, pos, cfg.formatId, sizeof(cfg.formatId));
+  wireReadBytes(buf, pos, cfg.identifier, sizeof(cfg.identifier));
+  cfg.numLedsPerChannel = wireReadU16(buf, pos);
+  cfg.numChannels = wireReadU8(buf, pos);
+  cfg.numGroupsPerChannel = wireReadU8(buf, pos);
+  cfg.spacerWidth = wireReadU8(buf, pos);
+  cfg.startOffset = wireReadU8(buf, pos);
+  cfg.blinkinterval = wireReadU16(buf, pos);
+  cfg.animateinterval = wireReadU16(buf, pos);
+  cfg.updateinterval = wireReadU16(buf, pos);
+  cfg.brightness = wireReadU16(buf, pos);
+  cfg.fadingAnimation = wireReadU16(buf, pos);
+  cfg.fading2StepIn = wireReadU16(buf, pos);
+  cfg.fading2StepOut = wireReadU16(buf, pos);
+  cfg.startupAnimation = wireReadU8(buf, pos) != 0;
+  cfg.localEcho = wireReadU8(buf, pos) != 0;
+  for (uint8_t i = 0; i < NUM_CHANNELS_MAX; i++) cfg.channelGPIOpin[i] = wireReadU8(buf, pos);
+  for (uint8_t i = 0; i < 12; i++) cfg.state_pattern[i] = wireReadU8(buf, pos);
+  for (uint8_t i = 0; i < 10; i++) {
+    cfg.state_color[i].r = wireReadU8(buf, pos);
+    cfg.state_color[i].g = wireReadU8(buf, pos);
+    cfg.state_color[i].b = wireReadU8(buf, pos);
+  }
+  for (uint8_t i = 0; i < NUM_CHANNELS_MAX; i++) cfg.channelOrder[i] = wireReadU8(buf, pos);
+  return pos == len;
+}
+
 /**
  * Load configuration from LittleFS file
  * Reads saved configuration and applies it to LedConfig struct
@@ -3094,7 +3384,7 @@ bool loadConfiguration() {
   if (buffer != 0) {
 
     // Calculate sizes to separate struct and checksum in buffer
-    const int structSize = sizeof(LedData);
+    const int structSize = CONFIG_WIRE_SIZE;
     const int totalSize = structSize + 32;  // 32 for the saved binary checksum
 
     // Require an exact-size file before touching its contents
@@ -3121,11 +3411,18 @@ bool loadConfiguration() {
 
     // Compare the loaded checksum with the recalculated checksum
     if (memcmp(loadedChecksum, calculatedChecksum, 32) == 0) {
-      // Checksums match: deserialize into a temporary struct and validate
-      // before it replaces the live configuration
+      // Checksums match: decode the field-wise wire format into a
+      // temporary struct and validate before it replaces the live
+      // configuration
       LedData temp;
-      memcpy(&temp, buffer, structSize);
+      bool decodeOk = decodeConfig((const uint8_t*)buffer, structSize, temp);
       delete[] buffer;  // Free memory
+
+      if (!decodeOk) {
+        Serial.println("Configuration decode failed (corrupt wire format).");
+        Serial.println();
+        return false;
+      }
 
       bool needsCorrection = validateConfig(temp);
       LedConfig = temp;
@@ -3162,10 +3459,10 @@ bool loadConfiguration() {
  */
 bool saveConfiguration() {
   CPULED(0x00,0x00,0x80);
-  // Serialize LedData Struct into char-array so we can save it
-  char buffer[sizeof(LedData)];
+  // Serialize LedData into the field-wise wire format so we can save it
+  char buffer[CONFIG_WIRE_SIZE];
   SHA256 sha256;
-  memcpy(buffer, &LedConfig, sizeof(LedData));
+  encodeConfig(LedConfig, (uint8_t*)buffer);
 
   // Calculate SHA-256 checksum
   sha256.reset();
@@ -3311,7 +3608,11 @@ constexpr uint32_t T1H = cpuledIterations(800.0f, 10);  // 800ns high time for a
 constexpr uint32_t T1L = cpuledIterations(450.0f, 15);  // 450ns low time for a '1' bit
 constexpr uint32_t T0H = cpuledIterations(400.0f, 10);  // 400ns high time for a '0' bit
 constexpr uint32_t T0L = cpuledIterations(850.0f, 17);  // 850ns low time for a '0' bit
-#define RESET_TIME 60  // >50us reset time
+#define RESET_TIME 60  // >50us reset time. v1.11 briefly raised this to 300
+                        // alongside a "skip if unchanged" send optimization;
+                        // both were reverted after real hardware showed wrong
+                        // CPU LED colors (see updateSystemStatusLED()). Back
+                        // to the known-good v1.10 value.
 
 /**
  * Busy-wait for (approximately) iterations * 3 CPU cycles.
@@ -3364,9 +3665,15 @@ void sendByte_CPULED(uint8_t byte) {
  */
 void sendRGB_CPULED(uint8_t r, uint8_t g, uint8_t b) {
   uint32_t interruptStatus = save_and_disable_interrupts();
+#if CPULED_COLOR_ORDER == CPULED_COLOR_ORDER_GRB
+  sendByte_CPULED(g);
+  sendByte_CPULED(r);
+  sendByte_CPULED(b);
+#else
   sendByte_CPULED(r);
   sendByte_CPULED(g);
   sendByte_CPULED(b);
+#endif
   restore_interrupts(interruptStatus);
   busy_wait_us(RESET_TIME); // Reset time after sending color
 }
