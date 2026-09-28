@@ -2352,12 +2352,17 @@ void setConfigParameters(char *Data) {
       case 'l':
         ValueInt = strictParseLong(Value);
         if (ValueInt >= NUM_LEDS_PER_CHANNEL_MIN and ValueInt <= NUM_LEDS_PER_CHANNEL_MAX) {
-          Serial.print("LEDs per channel      : " );
-          LedConfig.numLedsPerChannel = ValueInt;
-          Serial.println(LedConfig.numLedsPerChannel);
-          FastLED.clearData();
-          Serial.println("NOTE: FastLED controller lengths are fixed at boot.");
-          promptSaveAndReboot();
+          if (!isValidGeometry((uint16_t)ValueInt, LedConfig.numGroupsPerChannel, LedConfig.spacerWidth, LedConfig.startOffset)) {
+            Serial.println("Invalid: with the current groups/spacer/offset, this LED count would produce an invalid group geometry. Adjust Ct/Cw/Co first.");
+            errorCount++;
+          } else {
+            Serial.print("LEDs per channel      : " );
+            LedConfig.numLedsPerChannel = ValueInt;
+            Serial.println(LedConfig.numLedsPerChannel);
+            FastLED.clearData();
+            Serial.println("NOTE: FastLED controller lengths are fixed at boot.");
+            promptSaveAndReboot();
+          }
         } else {
           Serial.print("Invalid number of leds per channel(");
           Serial.print(NUM_LEDS_PER_CHANNEL_MIN);
@@ -2382,6 +2387,9 @@ void setConfigParameters(char *Data) {
             Serial.print(" exceeds MAX_GROUPS (");
             Serial.print(MAX_GROUPS);
             Serial.println(")!");
+            errorCount++;
+          } else if (!isValidGeometry(LedConfig.numLedsPerChannel, (uint8_t)ValueInt, LedConfig.spacerWidth, LedConfig.startOffset)) {
+            Serial.println("Invalid: with the current LED count/spacer/offset, this many groups would produce an invalid group geometry. Adjust Cl/Cw/Co first.");
             errorCount++;
           } else {
             Serial.print("Groups per channel : " );
@@ -2429,10 +2437,15 @@ void setConfigParameters(char *Data) {
       case 'w':
         ValueInt = strictParseLong(Value);
         if (ValueInt >= 0 and ValueInt <= SPACER_WIDTH_MAX) {
-          Serial.print("Spacer width         : " );
-          LedConfig.spacerWidth = ValueInt;
-          Serial.println(LedConfig.spacerWidth);
-          FastLED.clearData();
+          if (!isValidGeometry(LedConfig.numLedsPerChannel, LedConfig.numGroupsPerChannel, (uint8_t)ValueInt, LedConfig.startOffset)) {
+            Serial.println("Invalid: with the current LED count/groups/offset, this spacer width would produce an invalid group geometry. Adjust Cl/Ct/Co first.");
+            errorCount++;
+          } else {
+            Serial.print("Spacer width         : " );
+            LedConfig.spacerWidth = ValueInt;
+            Serial.println(LedConfig.spacerWidth);
+            FastLED.clearData();
+          }
         } else {
           Serial.print("Invalid space width(0-");
           Serial.print(SPACER_WIDTH_MAX);
@@ -2443,10 +2456,15 @@ void setConfigParameters(char *Data) {
       case 'o':
         ValueInt = strictParseLong(Value);
         if (ValueInt >= 0 and ValueInt <= START_OFFSET_MAX) {
-          Serial.print("Start offset         : " );
-          LedConfig.startOffset = ValueInt;
-          Serial.println(LedConfig.startOffset);
-          FastLED.clearData();
+          if (!isValidGeometry(LedConfig.numLedsPerChannel, LedConfig.numGroupsPerChannel, LedConfig.spacerWidth, (uint8_t)ValueInt)) {
+            Serial.println("Invalid: with the current LED count/groups/spacer, this start offset would produce an invalid group geometry. Adjust Cl/Ct/Cw first.");
+            errorCount++;
+          } else {
+            Serial.print("Start offset         : " );
+            LedConfig.startOffset = ValueInt;
+            Serial.println(LedConfig.startOffset);
+            FastLED.clearData();
+          }
         } else {
           Serial.print("Invalid start offset (0-");
           Serial.print(START_OFFSET_MAX);
@@ -3065,6 +3083,24 @@ bool writeFile(const char * path, const char * Data, size_t DataSize) {
  * @param cfg Configuration to validate (corrected in place)
  * @return true if any value was out of range and corrected
  */
+/**
+ * Check whether a given LED strip geometry is internally consistent: a
+ * positive segment width, a spacer narrower than the segment, and the last
+ * group fitting within numLedsPerChannel. Shared by validateConfig() and the
+ * live Cl/Ct/Cw/Co setters (setConfigParameters()) so a sequence of
+ * individually-valid runtime commands can't leave LedConfig in a combination
+ * validateConfig() would have rejected.
+ * @return true if the combined geometry is valid, false otherwise
+ */
+bool isValidGeometry(uint16_t numLedsPerChannel, uint8_t numGroupsPerChannel, uint8_t spacerWidth, uint8_t startOffset) {
+  if (numGroupsPerChannel == 0) return false;
+  const uint16_t segmentWidth = numLedsPerChannel / numGroupsPerChannel;
+  const uint32_t lastGroupEnd = (uint32_t)startOffset +
+                                (uint32_t)(numGroupsPerChannel - 1) * segmentWidth +
+                                (uint32_t)(segmentWidth - spacerWidth);
+  return segmentWidth != 0 && spacerWidth < segmentWidth && lastGroupEnd <= numLedsPerChannel;
+}
+
 bool validateConfig(LedData &cfg) {
   bool needsCorrection = false;
 
@@ -3121,17 +3157,11 @@ bool validateConfig(LedData &cfg) {
   // Combined geometry: a complete group must fit inside the configured strip
   // with positive width; otherwise rendering divides by zero or writes
   // out of bounds. Reset the geometry fields as a set when inconsistent.
-  {
-    const uint16_t segmentWidth = cfg.numLedsPerChannel / cfg.numGroupsPerChannel;
-    const uint32_t lastGroupEnd = (uint32_t)cfg.startOffset +
-                                  (uint32_t)(cfg.numGroupsPerChannel - 1) * segmentWidth +
-                                  (uint32_t)(segmentWidth - cfg.spacerWidth);
-    if (segmentWidth == 0 || cfg.spacerWidth >= segmentWidth || lastGroupEnd > cfg.numLedsPerChannel) {
-      cfg.numGroupsPerChannel = NUM_GROUPS_PER_CHANNEL_DEFAULT;
-      cfg.spacerWidth = SPACER_WIDTH_DEFAULT;
-      cfg.startOffset = START_OFFSET;
-      needsCorrection = true;
-    }
+  if (!isValidGeometry(cfg.numLedsPerChannel, cfg.numGroupsPerChannel, cfg.spacerWidth, cfg.startOffset)) {
+    cfg.numGroupsPerChannel = NUM_GROUPS_PER_CHANNEL_DEFAULT;
+    cfg.spacerWidth = SPACER_WIDTH_DEFAULT;
+    cfg.startOffset = START_OFFSET;
+    needsCorrection = true;
   }
 
   if (cfg.blinkinterval < BLINK_INTERVAL_MIN || cfg.blinkinterval > BLINK_INTERVAL_MAX) {
