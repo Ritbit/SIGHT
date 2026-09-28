@@ -1176,7 +1176,7 @@ void checkInput(char input[MAX_INPUT_LEN]) {
         #ifdef USE_RGBW_LEDS
           Serial.println("RGBW (4 bytes/LED)");
           Serial.println("Chipset          : SK6812");
-          Serial.println("Color Order      : RGB");
+          Serial.println("Color Order      : GRBW (fixed, not LED_COLOR_ORDER-configurable -- see CONTEXT.md)");
         #else
           Serial.println("RGB (3 bytes/LED)");
           Serial.println("Chipset          : WS2812B");
