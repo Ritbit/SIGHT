@@ -1268,10 +1268,24 @@ void checkInput(char input[MAX_INPUT_LEN]) {
                   if (validateConfig(temp)) {
                     Serial.println("WARNING: Imported configuration contained out-of-range values; corrected to safe defaults.");
                   }
+
+                  // FastLED controllers are registered once at boot with the
+                  // running numLedsPerChannel/channelGPIOpin[]; if the import
+                  // changed either, treat it the same as Cl/Cx and ask
+                  // before saving/rebooting instead of only the generic
+                  // save-or-reboot reminder below.
+                  bool rebootNeeded = (temp.numLedsPerChannel != LedConfig.numLedsPerChannel) ||
+                      (memcmp(temp.channelGPIOpin, LedConfig.channelGPIOpin, sizeof(temp.channelGPIOpin)) != 0);
+
                   LedConfig = temp;
 
                   Serial.println("Configuration imported successfully!");
-                  Serial.println("Use 'S' to save to flash, or 'R' to reboot and discard.");
+                  if (rebootNeeded) {
+                    Serial.println("NOTE: LED count and/or GPIO pin assignments changed; FastLED controllers are fixed at boot.");
+                    promptSaveAndReboot();
+                  } else {
+                    Serial.println("Use 'S' to save to flash, or 'R' to reboot and discard.");
+                  }
                 }
               }
             } else {
