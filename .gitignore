@@ -1,2 +1,7 @@
-CRAP/*
+CRAP
 *.uf2
+sight/AGENTS.md
+sight/CODE_REVIEW.md
+.devin
+.vscode
+tools
