@@ -490,13 +490,20 @@ uint8_t animate_Step[16]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 /**
  * Bound an animate_Step[] element to [0, modulus) atomically with respect to
  * the animateStep() interrupt callback, which only increments these elements.
+ * Returns the bounded value so callers can use it for indexing directly,
+ * instead of re-reading animate_Step[pattern] afterward -- the ISR can fire
+ * again in the gap between this call and a later unprotected read, drifting
+ * the array element 1 past the bound that was just applied here.
  * @param pattern Index into animate_Step[]
  * @param modulus Exclusive upper bound (must be >= 1)
+ * @return The bounded value of animate_Step[pattern]
  */
-inline void boundAnimateStep(uint8_t pattern, uint16_t modulus) {
+inline uint8_t boundAnimateStep(uint8_t pattern, uint16_t modulus) {
   uint32_t interruptStatus = save_and_disable_interrupts();
   animate_Step[pattern] = animate_Step[pattern] % modulus;
+  uint8_t bounded = animate_Step[pattern];
   restore_interrupts(interruptStatus);
+  return bounded;
 }
 
 // ##########################################################################################################
@@ -2027,7 +2034,8 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
               }
               break;
 
-      case 8: boundAnimateStep(pattern, groupWidth);
+      case 8: {
+              uint8_t step = boundAnimateStep(pattern, groupWidth);
                 // 5 Animate >         [#       ]
                 //                     [ #      ]
                 //                     [  #     ]
@@ -2040,14 +2048,16 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
                 leds[channelIndex][startLEDIndex + i].fadeLightBy(LedConfig.fadingAnimation);
                 ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
-              leds[channelIndex][startLEDIndex + animate_Step[pattern] ] = LedConfig.state_color[state];
-              ZERO_W(leds[channelIndex][startLEDIndex + animate_Step[pattern]]);
+              leds[channelIndex][startLEDIndex + step ] = LedConfig.state_color[state];
+              ZERO_W(leds[channelIndex][startLEDIndex + step]);
               break;
               // if ( i/(groupWidth/2) == 0 )
               //   leds[channelIndex][startLEDIndex+i] = LedConfig.state_color[state];;
               // break;
+              }
 
-      case 9: boundAnimateStep(pattern, groupWidth);
+      case 9: {
+              uint8_t step = boundAnimateStep(pattern, groupWidth);
               // 6 Animate <         [       #]
               //                     [      # ]
               //                     [     #  ]
@@ -2060,11 +2070,13 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
                 leds[channelIndex][startLEDIndex + i].fadeLightBy(LedConfig.fadingAnimation);
                 ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
-              leds[channelIndex][startLEDIndex + groupWidth - animate_Step[pattern] - 1] = LedConfig.state_color[state];
-              ZERO_W(leds[channelIndex][startLEDIndex + groupWidth - animate_Step[pattern] - 1]);
+              leds[channelIndex][startLEDIndex + groupWidth - step - 1] = LedConfig.state_color[state];
+              ZERO_W(leds[channelIndex][startLEDIndex + groupWidth - step - 1]);
               break;
+              }
 
-      case 10: boundAnimateStep(pattern, groupWidth*2);
+      case 10: {
+              uint8_t step = boundAnimateStep(pattern, groupWidth*2);
               // 7 Cyon/Kitt         [#       ]
               //                     [ #      ]
               //                     [  #     ]
@@ -2085,16 +2097,18 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
                 ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
 
-              if (animate_Step[pattern] < groupWidth ) {
-                leds[channelIndex][startLEDIndex + animate_Step[pattern]] = LedConfig.state_color[state];
-                ZERO_W(leds[channelIndex][startLEDIndex + animate_Step[pattern]]);
+              if (step < groupWidth ) {
+                leds[channelIndex][startLEDIndex + step] = LedConfig.state_color[state];
+                ZERO_W(leds[channelIndex][startLEDIndex + step]);
               } else {
-                leds[channelIndex][startLEDIndex + (groupWidth - (animate_Step[pattern] - groupWidth)) - 1] = LedConfig.state_color[state];
-                ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth - (animate_Step[pattern] - groupWidth)) - 1]);
+                leds[channelIndex][startLEDIndex + (groupWidth - (step - groupWidth)) - 1] = LedConfig.state_color[state];
+                ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth - (step - groupWidth)) - 1]);
               }
               break;
+              }
 
-      case 11: boundAnimateStep(pattern, groupWidth/2);
+      case 11: {
+              uint8_t step = boundAnimateStep(pattern, groupWidth/2);
               // 8 Animate ><        [#      #]
               //                     [ #    # ]
               //                     [  #  #  ]
@@ -2103,13 +2117,15 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
                 leds[channelIndex][startLEDIndex + i].fadeLightBy(LedConfig.fadingAnimation);
                 ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
-              leds[channelIndex][startLEDIndex + animate_Step[pattern]] = LedConfig.state_color[state];
-              leds[channelIndex][startLEDIndex+groupWidth - animate_Step[pattern] -1] = LedConfig.state_color[state];
-              ZERO_W(leds[channelIndex][startLEDIndex + animate_Step[pattern]]);
-              ZERO_W(leds[channelIndex][startLEDIndex+groupWidth - animate_Step[pattern] -1]);
+              leds[channelIndex][startLEDIndex + step] = LedConfig.state_color[state];
+              leds[channelIndex][startLEDIndex+groupWidth - step -1] = LedConfig.state_color[state];
+              ZERO_W(leds[channelIndex][startLEDIndex + step]);
+              ZERO_W(leds[channelIndex][startLEDIndex+groupWidth - step -1]);
               break;
+              }
 
-      case 12: boundAnimateStep(pattern, groupWidth/2);
+      case 12: {
+              uint8_t step = boundAnimateStep(pattern, groupWidth/2);
 
               // 9 Animate ><        [   ##   ]
               //                     [  #  #  ]
@@ -2119,11 +2135,12 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
                 leds[channelIndex][startLEDIndex + i].fadeLightBy(LedConfig.fadingAnimation);
                 ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
-              leds[channelIndex][startLEDIndex + (groupWidth/2) - animate_Step[pattern] - 1] = LedConfig.state_color[state];
-              leds[channelIndex][startLEDIndex + (groupWidth/2) + animate_Step[pattern]] = LedConfig.state_color[state];
-              ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth/2) - animate_Step[pattern] - 1]);
-              ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth/2) + animate_Step[pattern]]);
+              leds[channelIndex][startLEDIndex + (groupWidth/2) - step - 1] = LedConfig.state_color[state];
+              leds[channelIndex][startLEDIndex + (groupWidth/2) + step] = LedConfig.state_color[state];
+              ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth/2) - step - 1]);
+              ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth/2) + step]);
               break;
+              }
 
     }
 
