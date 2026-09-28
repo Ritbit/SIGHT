@@ -76,7 +76,13 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 // and checked on load/import. Bump it whenever the LedData layout or the
 // meaning of an existing field changes, so an incompatible saved/imported
 // struct is detected and rejected instead of being silently misinterpreted.
-#define CONFIG_IDENTIFIER "SIGHT-CFG1.11"
+// NOT tied 1:1 to VERSION -- v1.11 kept this at "SIGHT-CFG1.10" because the
+// LedData layout is unchanged from v1.10 (v1.11 only changed persistence's
+// serialization *mechanism*, raw memcpy -> field-wise encode/decode, which
+// happens to produce byte-identical output for this struct; verified via
+// sizeof(LedData) == CONFIG_WIRE_SIZE == 112, no padding). Only bump this
+// when the actual layout changes, per the comment above.
+#define CONFIG_IDENTIFIER "SIGHT-CFG1.10"
 
 // LED strip configuration (LED count limits and defaults)
 #define NUM_LEDS_PER_CHANNEL_DEFAULT 57
