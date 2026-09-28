@@ -1127,8 +1127,12 @@ void checkInput(char input[MAX_INPUT_LEN]) {
       }
     } else if (answer == 'N' || answer == 'n') {
       Serial.println("Reboot postponed. Use 'S' then 'R' later to apply the pending change.");
+      return;
     } else {
-      Serial.println("Please answer Y or N. Reboot prompt cancelled -- use 'S' then 'R' manually if needed.");
+      // Neither Y/N nor a valid command in this context -- the unconditional
+      // return below discards this line rather than parsing it as a normal
+      // command, so the prompt is simply cancelled.
+      Serial.println("Reboot prompt cancelled -- use 'S' then 'R' manually if needed.");
     }
     return;
   }
