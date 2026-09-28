@@ -37,7 +37,7 @@ LIB8STATIC void nscale8x4( uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& w, fract
   w = scale8_LEAVING_R1_DIRTY(w, scale);
   cleanup_R1();
 #else
-#error "No implementation for nscale8x3 available."
+#error "No implementation for nscale8x4 available."
 #endif
 }
 
@@ -114,27 +114,8 @@ struct CRGBW  {
 
   /// Fades the pixel toward black by the provided factor.
   inline CRGBW& fadeLightBy (uint8_t fadefactor ) {
-    uint8_t inv_fadefactor;
     nscale8x4( r, g, b, w,  255 - fadefactor);
     return *this;
-  }
-
-  /// Writes an RGBW color into a CRGB buffer treated as 4-channel data.
-  void RGBW_color( CRGB *leds  ,int led, int R, int G, int B, int W) {
-      int ind;
-      ind=led*4;
-
-      leds[0][ind]=G;
-      leds[0][ind+1]=R;
-      leds[0][ind+2]=B;
-      leds[0][ind+3]=W;
-  }
-
-  /// Calculates how many CRGB slots are needed to emulate RGBW LEDs.
-  inline uint16_t getRGBWsize(uint16_t nleds){
-    uint16_t nbytes = nleds * 4;
-    if(nbytes % 3 > 0) return nbytes / 3 + 1;
-    else return nbytes / 3;
   }
 
   /// Fills the CRGBW array with a solid RGB color.

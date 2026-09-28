@@ -1,7 +1,9 @@
 CRAP
 *.uf2
 sight/AGENTS.md
+sight/CONTEXT.md
 sight/CODE_REVIEW.md
+sight/CODERABBIT_FINDINGS.md
 .devin
 .vscode
 tools
