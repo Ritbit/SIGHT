@@ -107,7 +107,7 @@ LittleFS mounted successfully.
 Configuration loaded successfully.
 Initialization done..,
 
-Identifier           : SIGHT v1.9
+Identifier           : SIGHT v1.9.1
 LEDs per channel     : 57
 Groups per channel   : 6
 Amount of channels   : 8

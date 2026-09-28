@@ -1,9 +1,33 @@
 /*
 Name        : SIGHT (Shelf Indicators for Guided Handling Tasks)
-Version     : 1.9.1
+Version     : 1.10
 Date        : 2025-12-18
 Author      : Bas van Ritbergen <bas.vanritbergen@adyen.com> / bas@ritbit.com
 Description : LED strip controller with animations, RGBW support, and comprehensive safety features.
+
+              v1.10 improvements:
+              - Fixed group-ID truncation (uint16_t end-to-end) and undefined
+                behavior in the M command; groups now validate against the active config
+              - Added a shared validateConfig() (defaults/load/Li: import) and
+                defensive bounds checks in setLEDGroup() (division-by-zero, bad state/pattern/width)
+              - Config load now requires an exact file size before memcpy,
+                closing an out-of-bounds read on short/corrupt files
+              - Fed the watchdog during the startup animation/W command and
+                applied brightness before first output, preventing boot-loops and current spikes
+              - Fixed loop() render/show ordering (strip always shows the
+                latest frame); marked Cl as reboot-required like Cx
+              - Moved all CPU LED I/O out of interrupt context into one
+                atomic critical section; timing now scales with actual F_CPU
+              - Fixed FastLED 3.10+ build breakage from fl:: namespace
+                pollution (min/round/abs)
+              - Hardened serial parsers: NUL-terminated escape buffer,
+                decimal GPIO parsing, strict Cc/Cp/strtol validation instead of atoi
+              - LittleFS no longer auto-formats on mount failure; saves are
+                atomic (temp file + rename); a format identifier now detects incompatible layouts
+              - Closed an ISR/foreground race on animate_Step; errorCount and
+                system-info stats are now accurate
+              - Documented board-specific settings (CPU LED GPIO, channel
+                pins) and added a FastLED version compatibility check
 
               v1.9.1 improvements:
               - Fixed serial input to accept CR, LF, or CR+LF line endings
@@ -13,32 +37,6 @@ Description : LED strip controller with animations, RGBW support, and comprehens
               - Fixed typo in help text (CPIO -> GPIO)
               - Code cleanup: removed duplicate echo settings
 
-              v1.9 improvements:
-              - Renamed shelf/strip/output to channel to make it more generic
-              - Added support for 2-step fading apart from the regular fading
-              - Renamed Fading to FadingAnimation to distinguish between the two
-              - Fixed all codeStyle issues, made it more readable and consistent
-              - Added more comments and documentation
-              - Added an proper interactive line editor with history and cursor control.
-              - Added CPU status LED states (startup blue, normal green, error red) with brightness control
-              - Implemented percent-based two-step fade-in/fade-out with configurable Cf:<anim>:<in>:<out>
-              - Improved LED group handling for partial fills and ensured flashing works with percentages
-
-              v1.8 improvements:
-              - Added comprehensive config validation on load and runtime
-              - Added more error checking and validation
-              - Added more statistics tracking (uptime, Command count, error count)
-              - Added more safety features (watchdog timer, brightness safety limits, buffer overflow protection)
-              - Added Command echo, version info, help, and system info Commands
-              - Added config backup/restore via hex export/import (Se/Li Commands)
-              - Added quick status summary (Q Command) and improved group state display (G Command)
-              - Added brightness safety limits and warnings
-              - Added buffer overflow protection and input validation
-              - Improved error messages with actual Values shown
-              - Added function documentation and const correctness
-              - Fixed group LED clearing to prevent color overlap
-
-              v1.7 improvements:
 
 Notes       : When compiling make sure to reserve a little space for littleFS (8-64k)
               Supports both RGB (WS2812B) and RGBW (WS2813B/SK6812) LED strips.
@@ -61,14 +59,18 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 */
 // Current firmware version
-#define VERSION "1.9.1"
+#define VERSION "1.10"
 
 // Maximum length for system identifier and system default name
 #define IDENTIFIER_MAX_LENGTH 16
-#define IDENTIFIER_DEFAULT "SIGHT v"VERSION
+#define IDENTIFIER_DEFAULT "SIGHT v" VERSION
 
 // Configuration identifier for validation and versioning
-#define CONFIG_IDENTIFIER "SIGHT-CFG1.9"
+// This is stored inside the persisted config struct (see LedData::formatId)
+// and checked on load/import. Bump it whenever the LedData layout or the
+// meaning of an existing field changes, so an incompatible saved/imported
+// struct is detected and rejected instead of being silently misinterpreted.
+#define CONFIG_IDENTIFIER "SIGHT-CFG1.10"
 
 // LED strip configuration (LED count limits and defaults)
 #define NUM_LEDS_PER_CHANNEL_DEFAULT 57
@@ -162,6 +164,20 @@ enum AnimationPattern {
 // Enable startup animation on boot
 #define STARTUP_ANIMATION true
 
+// By design, this controller is not intended to run headless: setup()
+// waits indefinitely for a serial (USB) connection before proceeding (see
+// setup()). Do not add a timeout here without confirming with the product
+// owner first -- an earlier attempt to add one was a mistaken, unrequested
+// behavior change and was reverted.
+//
+// Extra grace period (ms) after a serial connection is detected, before any
+// boot-banner output is sent. Covers a real race between the firmware
+// seeing Serial==true and the host-side terminal actually being ready to
+// read, which otherwise loses the first burst of output. This does not
+// change the indefinite-wait behavior above; it only smooths out what
+// happens once a connection is actually made.
+#define SERIAL_CONNECT_SETTLE_MS 300
+
 // Input Data from serial is stored in an array for further processing and editing.
 #define HISTORY_SIZE 20
 
@@ -170,15 +186,15 @@ enum AnimationPattern {
 
 // System status LED configuration (dimmed brightness at 64 for visibility)
 #define CPULED_STATUS_BRIGHTNESS 32  // Dimmed brightness for status indicators
-#define CPULED_NORMAL_INTERVAL 2000  // Normal operation: slow blue glow
+#define CPULED_NORMAL_INTERVAL 2000  // Normal operation: slow green glow
 #define CPULED_ERROR_INTERVAL 500    // Error state: fast red blink
-#define CPULED_STARTUP_INTERVAL 1000  // Startup: medium green pulse
+#define CPULED_STARTUP_INTERVAL 1000  // Startup: medium blue pulse
 
 // LED brightness configuration (0-255 range, with safety limits)
-#define BRIGHTNESS 255
-#define BRIGHTNESS_MIN 10
-#define BRIGHTNESS_MAX 255
-#define BRIGHTNESS_WARNING_THRESHOLD 200
+#define STRIP_BRIGHTNESS 255
+#define STRIP_BRIGHTNESS_MIN 10
+#define STRIP_BRIGHTNESS_MAX 255
+#define STRIP_BRIGHTNESS_WARNING_THRESHOLD 200
 
 // Animation fading speed configuration
 #define FADING 48
@@ -232,11 +248,24 @@ enum AnimationPattern {
 #define GPIO_PIN_MIN 2
 #define GPIO_PIN_MAX 26
 
-// GPIO pin for onboard status LED
-#define CPULED_GPIO 16
+// GPIO pin for the onboard status LED (bit-banged WS2812-style RGB LED).
+// This is board-specific: GPIO 16 is correct for the Waveshare RP2040 Zero.
+// If you target a different RP2040 board, update this to match its onboard
+// addressable LED pin (or disable the status LED code entirely if the board
+// has none). ARDUINO_WAVESHARE_RP2040_ZERO is defined by the Arduino-Pico
+// core when that board is selected in the IDE.
+#if defined(ARDUINO_WAVESHARE_RP2040_ZERO)
+  #define CPULED_GPIO 16
+#else
+  #define CPULED_GPIO 16
+  #warning "CPULED_GPIO defaults to 16, which is only verified correct for the Waveshare RP2040 Zero. Verify/update it for your board."
+#endif
 
 // Configuration file path in LittleFS
 #define CONFIG_FILENAME "/config.bin"
+// Temporary path used while saving, so a reset/power loss mid-write cannot
+// leave a truncated/corrupt config.bin (see saveConfiguration()).
+#define CONFIG_FILENAME_TMP "/config.bin.tmp"
 
 // ###########################################################################
 // No configurable items below
@@ -244,12 +273,16 @@ enum AnimationPattern {
 
 // Buffer size configuration (input/output string limits)
 #define MAX_INPUT_LEN 512
-#define MAX_OUTPUT_LEN 2560
+// Used only for short, single-line formatted messages (a few dozen bytes at
+// most); previously 2560, which put an oversized 2.5 KiB buffer on the stack
+// in checkInput() and showConfiguration() for no benefit.
+#define MAX_OUTPUT_LEN 128
 
 // We definitely need these libraries
 #include <Arduino.h>            // Core Arduino library e.g. for GPIO pins
 #include <cstring>              // String functions
 #include <cstdlib>              // Memory functions
+#include <cerrno>               // errno for strict numeric parsing (strictParseLong)
 #include <Ticker.h>             // Ticker library for timed events (animations/flashing)
 #include <Crypto.h>             // Crypto library for SHA256
 #include <SHA256.h>             // SHA256 library for creating configfile checksum
@@ -257,6 +290,7 @@ enum AnimationPattern {
 #include <FastLED.h>            // Core LED control library (RGB/RGBW)
 #include "FastLED_RGBW.h"       // Add RGBW support for FastLED  
 #include "hardware/watchdog.h"  // Core watchdog timer
+#include "hardware/sync.h"      // save_and_disable_interrupts/restore_interrupts for CPU LED bit-banging
 #include <MicrocontrollerID.h>  // Figure MCU type/serial
 
 // ============================================================================
@@ -264,6 +298,20 @@ enum AnimationPattern {
 // ============================================================================
 #if !defined(ARDUINO_ARCH_RP2040)
   #error "This firmware requires an RP2040-based board. Select the correct board in Arduino IDE."
+#endif
+
+// ============================================================================
+// Build-time check: FastLED version this sketch was verified against
+// ============================================================================
+// FastLED >= 3.10 injects fl::min/fl::max/fl::round/fl::abs into the global
+// namespace, which makes unqualified calls to those names ambiguous (this
+// sketch avoids them entirely; see AGENTS.md/CODE_REVIEW.md). This is only a
+// warning, not a hard version pin, since patch releases are expected to stay
+// compatible; verify a min/round/abs-related build failure or CPU LED/strip
+// timing change if you update FastLED and this fires.
+#define FASTLED_TESTED_VERSION 3010005  // FastLED 3.10.5
+#if defined(FASTLED_VERSION) && FASTLED_VERSION != FASTLED_TESTED_VERSION
+  #pragma message "NOTE: This sketch was verified against FastLED 3.10.5. A different FastLED version is in use; re-verify the build and CPU LED/strip timing."
 #endif
 
 // If no FS space is allocated, LittleFS will fail to mount and configuration will not be saved/loaded
@@ -288,6 +336,11 @@ char mcuId[41];
 // Config Data is conviently stored in a struct (to easy store and retrieve from EEPROM/Flash)
 // Set defaults, they will be overwritten by load from EEPROM
 struct LedData {
+  // Persisted format identifier/version. Raw-struct persistence is sensitive to
+  // ABI layout, padding, and field meaning; this is checked on load/import so a
+  // struct from an incompatible firmware build is flagged instead of being
+  // silently misinterpreted. Bump CONFIG_IDENTIFIER whenever the layout changes.
+  char   formatId[16] = CONFIG_IDENTIFIER;
   char   identifier[IDENTIFIER_MAX_LENGTH] = IDENTIFIER_DEFAULT;
   uint16_t               numLedsPerChannel = NUM_LEDS_PER_CHANNEL_DEFAULT;
   uint8_t                      numChannels = NUM_CHANNELS_DEFAULT;
@@ -297,7 +350,7 @@ struct LedData {
   uint16_t                   blinkinterval = BLINK_INTERVAL;
   uint16_t                 animateinterval = ANIMATE_INTERVAL;
   uint16_t                  updateinterval = UPDATE_INTERVAL;
-  uint16_t                      brightness = BRIGHTNESS;
+  uint16_t                      brightness = STRIP_BRIGHTNESS;
   uint16_t                 fadingAnimation = FADING;
   uint16_t                   fading2StepIn = FADING_2STEP_IN;
   uint16_t                  fading2StepOut = FADING_2STEP_OUT;
@@ -330,7 +383,7 @@ enum EscapeParseState {
 };
 
 EscapeParseState escapeState = ESC_STATE_NONE;
-char escapeDigits[4];
+char escapeDigits[5];  // Up to 4 CSI parameter digits + NUL terminator
 uint8_t escapeDigitCount = 0;
 const uint16_t ESC_TIMEOUT_MS = 80;
 uint32_t escapeStartMillis = 0;
@@ -353,13 +406,6 @@ uint32_t lastCpuLedUpdate = 0;
 uint8_t cpuLedBrightness = 0;
 bool cpuLedDirection = true; // true = brightening, false = dimming
 
-// for LEDstrip update frequency
-int      updateinterval = 100;
-uint32_t lastLedUpdate=0;
-
-// for status update
-uint32_t laststateUpdate;
-
 // Statistics tracking
 uint32_t bootTime = 0;
 uint32_t CommandCount = 0;
@@ -381,7 +427,24 @@ Ticker update_Timer;
 Ticker blink_Timer;
 Ticker setgroup_Timer;
 Ticker animate_Timer;
+// Concurrency model: animateStep() (a Ticker/interrupt callback) only
+// increments each element. setLEDGroup() (foreground, called from loop())
+// periodically bounds each element with a modulo via boundAnimateStep(),
+// which wraps the read-modify-write in a short critical section so an
+// increment landing between the read and the write can't be lost/torn.
 uint8_t animate_Step[16]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+
+/**
+ * Bound an animate_Step[] element to [0, modulus) atomically with respect to
+ * the animateStep() interrupt callback, which only increments these elements.
+ * @param pattern Index into animate_Step[]
+ * @param modulus Exclusive upper bound (must be >= 1)
+ */
+inline void boundAnimateStep(uint8_t pattern, uint16_t modulus) {
+  uint32_t interruptStatus = save_and_disable_interrupts();
+  animate_Step[pattern] = animate_Step[pattern] % modulus;
+  restore_interrupts(interruptStatus);
+}
 
 // ##########################################################################################################
 
@@ -401,20 +464,21 @@ void setup() {
   gpio_put(CPULED_GPIO, 0);
   CPULED(0x00,0x00,0x00);
 
-#ifdef POWERON_GPIOTEST 
-  #if POWERON_GPIOTEST == true 
-
-  // Enable GPIO 2-9 for pin test.
+  // By design, this controller requires an operator to connect over serial
+  // before it proceeds -- it is not intended to run headless. Wait here
+  // indefinitely for that connection; the pulsing blue status LED
+  // (SYSTEM_STARTUP) is the operator-facing signal that the controller is
+  // powered and waiting. This runs before watchdog_enable(), so no
+  // watchdog feeding is needed during the wait.
+  setSystemState(SYSTEM_STARTUP);
+#if defined(POWERON_GPIOTEST) && POWERON_GPIOTEST == true
+  // Bench-test aid: also toggle GPIO 2-9 high/low one at a time while
+  // waiting, so a logic analyzer/LED can confirm every channel GPIO still
+  // works, without changing the indefinite-wait behavior above.
   for (int PIN=0; PIN<NUM_CHANNELS_MAX; PIN++) {
     pinMode(PIN+GPIO_PIN_MIN, OUTPUT);
   }
-
-  setSystemState(SYSTEM_STARTUP);
   while (!Serial) {
-    // wait for serial port to connect.
-    // Run a slow GPIO pintest while waiting
-    // Status LED pulses blue via SYSTEM_STARTUP state
-
     updateSystemStatusLED();
     for (int PIN=0; PIN<NUM_CHANNELS_MAX; PIN++) {
       digitalWrite(PIN+GPIO_PIN_MIN, HIGH);
@@ -423,15 +487,25 @@ void setup() {
       updateSystemStatusLED();
     }
   }
-
-  #endif
+#else
+  while (!Serial) {
+    updateSystemStatusLED();
+    delay(10);
+  }
 #endif
+  // Serial.operator bool() (tud_cdc_connected()) can briefly report
+  // "connected" a moment before the host-side terminal/application has
+  // actually attached its read buffer (a well-known race on native-USB
+  // boards). This short grace period avoids losing the first burst of boot
+  // banner output to that race; it does not change the indefinite wait
+  // above in any way.
+  delay(SERIAL_CONNECT_SETTLE_MS);
 
   // Enable watchdog timer (8 seconds timeout)
   // System will auto-reboot if watchdog is not fed within this time
   watchdog_enable(8000, 1);
 
-  // Set status led to blue to show we are busy
+  // Set status led to green glow to show normal operation
   setSystemState(SYSTEM_NORMAL);
 
   //   Reset all to low
@@ -473,30 +547,18 @@ void setup() {
 
   // Initialize LittleFS if available
   if (!LittleFS.begin()){
-    Serial.println("LittleFS mount failed!");
-
-    // Attempt to format the filesystem
-    Serial.println("Formatting LittleFS...");
-    if (LittleFS.format()) {
-      Serial.println("LittleFS formatting successful!");
-
-      // Try to mount again after formatting
-      if (LittleFS.begin()) {
-        Serial.println("LittleFS mounted successfully after formatting.");
-      } else {
-        Serial.println("WARNING !!!");
-        Serial.println("LittleFS mount failed after formatting --> Load/Saving configuration not possible...");
-        Serial.println();
-        // delay(2000);
-        // rebootMCU();
-      }
-    } else {
-        Serial.println("WARNING !!!");
-        Serial.println("LittleFS formatting failed --> Load/Saving configuration not possible...");
-        Serial.println();
-      // delay(2000);
-      // rebootMCU();
-    }
+    // Do NOT auto-format: a transient mount/compatibility issue would
+    // otherwise silently destroy any previously saved configuration.
+    // Fall back to in-memory defaults (not persisted) and require an
+    // explicit, confirmed 'F:YES' command before ever formatting.
+    Serial.println("WARNING !!!");
+    Serial.println("LittleFS mount failed. Load/Saving configuration is not possible.");
+    Serial.println("Running with in-memory defaults for this session.");
+    Serial.println("If this is expected (e.g. first boot with no filesystem yet), use");
+    Serial.println("'F:YES' to format LittleFS, then 'S' to save a configuration.");
+    Serial.println();
+    resetToDefaults();
+    setSystemState(SYSTEM_ERROR);
   } else {
     Serial.println("LittleFS mounted successfully.");
     // Load or set defaults
@@ -598,7 +660,10 @@ void setup() {
 
   // Set system state to normal operation
   setSystemState(SYSTEM_NORMAL);
-  Serial.println("System ready - Status LED: Blue glow");
+  Serial.println("System ready - Status LED: Green glow");
+
+  // Apply brightness before any strip output, including the startup animation
+ 	FastLED.setBrightness(LedConfig.brightness);
 
   // Run startup animation if enabled
   if (LedConfig.startupAnimation) {
@@ -608,8 +673,6 @@ void setup() {
     FastLED.clear();
     FastLED.show();
   }
-
- 	FastLED.setBrightness(LedConfig.brightness);
 
   // start timers for updating leds (x1000 so we set mSec)
   update_Timer.attach_ms(LedConfig.updateinterval, &writeChannelData);
@@ -640,12 +703,13 @@ void writeChannelData() {
 }
 
 /**
- * Toggle blink state for CPU LED and animation timing
- * Switches blinkState between true/false and updates CPU LED accordingly
+ * Toggle blink state for strip blinking patterns
+ * Switches blinkState between true/false. This runs in Ticker (interrupt)
+ * context, so it must only set a flag/variable; all hardware I/O (including
+ * the CPU status LED) is handled exclusively in loop()/updateSystemStatusLED().
  */
 void setBlinkState() {
   blinkState = !blinkState;
-  (blinkState == true)?CPULED(0x40,0x00,0x00):CPULED(0x00,0x00,0x00);
   return;
 }
 
@@ -688,14 +752,17 @@ void loop() {
     handleSerialInput();
   }
 
-  if (SetGroupStateFlag) {
-     FastLED.show();
-     SetGroupStateFlag=false;
-  }
-
+  // Render the pixel buffer before sending it, so FastLED.show() always
+  // transmits the most recently computed group states rather than the
+  // previous iteration's buffer.
   if (ChannelUpdate) {
     ChannelUpdate=false;
     updateGroups();
+  }
+
+  if (SetGroupStateFlag) {
+     FastLED.show();
+     SetGroupStateFlag=false;
   }
 }
 
@@ -729,13 +796,14 @@ void handleSerialInput() {
       }
     } else if (escapeState == ESC_STATE_CSI) {
       if (c >= '0' && c <= '9') {
-        if (escapeDigitCount < sizeof(escapeDigits)) {
+        if (escapeDigitCount < sizeof(escapeDigits) - 1) {  // Leave room for NUL
           escapeDigits[escapeDigitCount++] = c;
         }
         escapeStartMillis = millis();
         continue;
       }
 
+      escapeDigits[escapeDigitCount] = '\0';
       int value = (escapeDigitCount == 0) ? 0 : atoi(escapeDigits);
       if (c == 'A') {
         if (historyBrowseOffset < historySize) {
@@ -1093,17 +1161,26 @@ void checkInput(char input[MAX_INPUT_LEN]) {
                   Serial.print(c);
                   Serial.print("' at position ");
                   Serial.println(i);
+                  errorCount++;
                   break;
                 }
               }
 
               if (validHex) {
-                uint8_t* configBytes = (uint8_t*)&LedConfig;
+                // Decode into a temporary struct and validate before touching
+                // the live configuration
+                LedData temp;
+                uint8_t* configBytes = (uint8_t*)&temp;
 
-                for (size_t i = 0; i < sizeof(LedConfig); i++) {
+                for (size_t i = 0; i < sizeof(temp); i++) {
                   char byteStr[3] = {hexData[i*2], hexData[i*2+1], '\0'};
                   configBytes[i] = (uint8_t)strtol(byteStr, NULL, 16);
                 }
+
+                if (validateConfig(temp)) {
+                  Serial.println("WARNING: Imported configuration contained out-of-range values; corrected to safe defaults.");
+                }
+                LedConfig = temp;
 
                 Serial.println("Configuration imported successfully!");
                 Serial.println("Use 'S' to save to flash, or 'R' to reboot and discard.");
@@ -1113,9 +1190,11 @@ void checkInput(char input[MAX_INPUT_LEN]) {
               Serial.print(expectedLen);
               Serial.print(" chars, got ");
               Serial.println(hexLen);
+              errorCount++;
             }
           } else {
             Serial.println("ERROR: Format must be Li:CONFIG:<hex_string>");
+            errorCount++;
           }
         } else {
           // L - Load from flash
@@ -1126,7 +1205,7 @@ void checkInput(char input[MAX_INPUT_LEN]) {
 
       // Set Groups state
       case 'T':
-        parseResult = sscanf(Data, "%2d:%d", &groupID, &state);
+        parseResult = sscanf(Data, "%4d:%d", &groupID, &state);
         if (parseResult == 2) {
           if (isValidGroup(groupID)) {
             if (isValidState(state)) {
@@ -1138,20 +1217,24 @@ void checkInput(char input[MAX_INPUT_LEN]) {
               Serial.print("ERROR: Invalid state '");
               Serial.print(state);
               Serial.println("', use 0-9");
+              errorCount++;
             }
           } else {
             Serial.print("ERROR: Invalid Group-ID '");
             Serial.print(groupID);
             Serial.print("', use 1-");
-            Serial.println(MAX_GROUPS);
+            Serial.println(LedConfig.numChannels * LedConfig.numGroupsPerChannel);
+            errorCount++;
           }
-        } else
+        } else {
           Serial.println("Syntax error: Use T<Group-ID>:<STATE>");
+          errorCount++;
+        }
         break;
 
       // Set Group state
       case 'P':
-        parseResult = sscanf(Data, "%2d:%d:%3d", &groupID, &state, &pct);
+        parseResult = sscanf(Data, "%4d:%d:%4d", &groupID, &state, &pct);
         if (parseResult == 3) {
           if (isValidGroup(groupID)) {
             if (isValidState(state)) {
@@ -1164,22 +1247,26 @@ void checkInput(char input[MAX_INPUT_LEN]) {
                 Serial.print("ERROR: Invalid percentage '");
                 Serial.print(pct);
                 Serial.println("', use 0-100");
+                errorCount++;
               }
             } else {
               Serial.print("ERROR: Invalid state '");
               Serial.print(state);
               Serial.println("', use 0-9");
+              errorCount++;
             }
           } else {
             Serial.print("ERROR: Invalid Group-ID '");
             Serial.print(groupID);
             Serial.print("', use 1-");
-            Serial.println(MAX_GROUPS);
+            Serial.println(LedConfig.numChannels * LedConfig.numGroupsPerChannel);
+            errorCount++;
           }
         } else {
           Serial.print("Syntax error: Use Pgg:s:ppp (gg=group 1-");
           Serial.print(MAX_GROUPS);
           Serial.println(", s=state 0-9, ppp=percent 0-100)");
+          errorCount++;
         }
         break;
 
@@ -1198,24 +1285,29 @@ void checkInput(char input[MAX_INPUT_LEN]) {
             Serial.print("ERROR: Invalid state '");
             Serial.print(state);
             Serial.println("', use 0-9");
+            errorCount++;
           }
-        } else
+        } else {
           Serial.println("ERROR: Syntax error, use A:<STATE>");
+          errorCount++;
+        }
         break;
 
       // Set mass state, a digit for each group (48 max)
       case 'M':
-        char ST;
         if ( Data[0] == ':') {
           int groupID=1;
           int totalChars = strlen(Data+1);
+          int appliedCount = 0;
+          int invalidCount = 0;
 
           while ( Data[groupID] != 0 && groupID<=MAX_GROUPS ) {
-            ST=Data[groupID];
-            state = atoi(&ST);
-            if (state >= 0 && state <= 9) {
-              TermState[groupID -1]=state;
+            if (Data[groupID] >= '0' && Data[groupID] <= '9') {
+              TermState[groupID -1] = Data[groupID] - '0';
               TermPct[groupID -1] = 100;
+              appliedCount++;
+            } else {
+              invalidCount++;
             }
             groupID++;
           }
@@ -1229,11 +1321,21 @@ void checkInput(char input[MAX_INPUT_LEN]) {
             Serial.println(" groups)");
           }
 
+          // Warn (but do not fail the command) on non-digit characters;
+          // those group states are left unchanged.
+          if (invalidCount > 0) {
+            Serial.print("WARNING: ");
+            Serial.print(invalidCount);
+            Serial.println(" non-digit character(s) ignored (use 0-9 only)");
+          }
+
           Serial.print("Set ");
-          Serial.print(min(totalChars, MAX_GROUPS));
+          Serial.print(appliedCount);
           Serial.println(" group states");
-        } else
+        } else {
           Serial.println("Syntax error: Use M:<STATE><STATE<<STATE>...");
+          errorCount++;
+        }
         break;
 
       // Reset all states to off
@@ -1301,12 +1403,14 @@ void checkInput(char input[MAX_INPUT_LEN]) {
           Serial.println("==========================");
           Serial.println();
 
-          // Count groups in each state
+          // Count groups in each state (only the currently configured groups,
+          // not the full MAX_GROUPS allocation)
+          const int configuredGroups = LedConfig.numChannels * LedConfig.numGroupsPerChannel;
           int stateCounts[10] = {0};
           int activeGroups = 0;
 
-          for (int i = 0; i < MAX_GROUPS; i++) {
-            if (TermState[i] >= 0 && TermState[i] <= 9) {
+          for (int i = 0; i < configuredGroups; i++) {
+            if (TermState[i] <= 9) {
               stateCounts[TermState[i]]++;
               if (TermState[i] > 0) activeGroups++;
             }
@@ -1315,7 +1419,7 @@ void checkInput(char input[MAX_INPUT_LEN]) {
           Serial.print("Active groups    : ");
           Serial.print(activeGroups);
           Serial.print(" / ");
-          Serial.println(MAX_GROUPS);
+          Serial.println(configuredGroups);
 
           Serial.println();
           Serial.println("Groups per state:");
@@ -1368,6 +1472,25 @@ void checkInput(char input[MAX_INPUT_LEN]) {
       case 'R':
         Serial.println("Rebooting controller...");
         rebootMCU();
+        break;
+
+      // Format LittleFS (destructive; requires explicit confirmation).
+      // Needed after a mount failure, since setup() no longer auto-formats.
+      case 'F':
+        if (strcmp(Data, ":YES") == 0) {
+          Serial.println("Formatting LittleFS...");
+          if (LittleFS.format()) {
+            Serial.println("LittleFS formatted successfully. Rebooting to remount...");
+            delay(200);
+            rebootMCU();
+          } else {
+            Serial.println("LittleFS formatting failed.");
+            errorCount++;
+          }
+        } else {
+          Serial.println("WARNING: This erases all saved configuration.");
+          Serial.println("Use 'F:YES' to confirm formatting LittleFS.");
+        }
         break;
 
       default:
@@ -1495,6 +1618,7 @@ void showHelp() {
   Serial.println("  L                             Load configuration from flash");
   Serial.println("  Li:CONFIG:                    Load/Import configuration from hex (restore)");
   Serial.println("  R                             Reboot controller");
+  Serial.println("  F:YES                         Format LittleFS (destructive; only needed after a mount failure)");
   Serial.println("  W                             Show startup loop animation");
   Serial.println();
 
@@ -1516,7 +1640,7 @@ void showHelp() {
   Serial.print  (NUM_LEDS_PER_CHANNEL_MIN);
   Serial.print  ("-");
   Serial.print  (NUM_LEDS_PER_CHANNEL_MAX);
-  Serial.println(")");
+  Serial.println(") [reboot required to fully take effect]");
   Serial.print  ("  Ct:<Value>                    Set amount of groups per channel (1-");
   Serial.print  (NUM_GROUPS_PER_CHANNEL_MAX);
   Serial.println(")");
@@ -1610,7 +1734,7 @@ inline void rampPixelToward(LedPixel &pixel, const CRGB &target, uint8_t percent
       return;
     }
 
-    int32_t step = (abs(difference) * percent) / 100;
+    int32_t step = ((difference < 0 ? -difference : difference) * percent) / 100;
     if (step == 0) {
       step = 1;
     }
@@ -1661,28 +1785,37 @@ inline void applyTwoStepPixel(LedPixel &pixel, bool turnOn, const CRGB &color) {
  * @param state Display state (0-9)
  * @param Pct Percentage fill (0-100)
  */
-void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
+void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
   int pattern = 0, channelIndex = 0, groupIndex = 0, startLEDIndex = 0, groupWidth = 0;
 
+  // Defensive validation: reject out-of-range inputs at the rendering boundary
+  if (state > MAX_STATE) return;
+  if (group >= (uint16_t)LedConfig.numChannels * LedConfig.numGroupsPerChannel) return;
+
   pattern = LedConfig.state_pattern[state];
+  if (pattern > PATTERN_MAX) pattern = 0;  // Corrupt config: fall back to solid
+
   channelIndex = group / LedConfig.numGroupsPerChannel;
 
   // Use manual channel order mapping
-  if (channelIndex < NUM_CHANNELS_MAX) {
-    channelIndex = LedConfig.channelOrder[channelIndex] - 1; // Convert to 0-based index
-  } else {
-    return; // Invalid channel, skip
-  }
+  if (channelIndex >= NUM_CHANNELS_MAX) return; // Invalid channel, skip
+  channelIndex = LedConfig.channelOrder[channelIndex] - 1; // Convert to 0-based index
+  if (channelIndex < 0 || channelIndex >= NUM_CHANNELS_MAX) return; // Corrupt channel order
 
   groupIndex = group % LedConfig.numGroupsPerChannel;
-  startLEDIndex = groupIndex * round(LedConfig.numLedsPerChannel / LedConfig.numGroupsPerChannel) + LedConfig.startOffset;
-  groupWidth = (LedConfig.numLedsPerChannel / LedConfig.numGroupsPerChannel) - LedConfig.spacerWidth;
+  const int segmentWidth = LedConfig.numLedsPerChannel / LedConfig.numGroupsPerChannel;
+  if (segmentWidth <= 0) return; // More groups than LEDs: nothing to draw
 
-  // Bounds check: ensure we don't write past the LED array
+  startLEDIndex = groupIndex * segmentWidth + LedConfig.startOffset;
+  groupWidth = segmentWidth - LedConfig.spacerWidth;
+
+  // Bounds check: ensure we don't write past the configured strip or the LED array
+  if (startLEDIndex < 0 || startLEDIndex >= NUM_LEDS_PER_CHANNEL_MAX) return;
   if (startLEDIndex + groupWidth > NUM_LEDS_PER_CHANNEL_MAX) {
     groupWidth = NUM_LEDS_PER_CHANNEL_MAX - startLEDIndex;
-    if (groupWidth <= 0) return; // Nothing to draw
   }
+  if (groupWidth < 1) return; // Zero/negative width: no room to draw
+  if ((pattern == PATTERN_CHASE_IN || pattern == PATTERN_CHASE_OUT) && groupWidth < 2) return;
   const int fullGroupWidth = groupWidth;
 
   // Clear entire group only when no fade is configured (legacy behavior)
@@ -1697,14 +1830,19 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
   bool isPartialFill = (Pct < 100);
   if (Pct < 100) {
     float factor = float(Pct) / 100.0f;
-    groupWidth = round(float(groupWidth) * factor);
+    groupWidth = int(float(groupWidth) * factor + 0.5f);
     if (groupWidth == 0 && Pct > 0) {
       groupWidth = 1;  // only no leds on 0%
     }
   }
 
+  // Re-check after partial fill: a 0% group or a 1-LED group must not reach
+  // patterns that divide by groupWidth or groupWidth/2
+  if (groupWidth < 1) return;
+  if ((pattern == PATTERN_CHASE_IN || pattern == PATTERN_CHASE_OUT) && groupWidth < 2) return;
+
   switch (pattern) {
-      case 0: animate_Step[pattern]=animate_Step[pattern]%1;
+      case 0: boundAnimateStep(pattern, 1);
               // 0 solid no blink    [########]
               //                     [########]
               for(int i = 0; i < groupWidth; i++) {
@@ -1712,7 +1850,7 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
               }
               break;
 
-      case 1:	animate_Step[pattern]=animate_Step[pattern]%2;
+      case 1:	boundAnimateStep(pattern, 2);
               // 1 solid blink       [########]
               //                     [        ]
               for(int i = 0; i < groupWidth; i++) {
@@ -1720,7 +1858,7 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
               }
               break;
 
-      case 2:	animate_Step[pattern]=animate_Step[pattern]%2;
+      case 2:	boundAnimateStep(pattern, 2);
               // 1 solid blink inv.  [        ]
               //                     [########]
               for(int i = 0; i < groupWidth; i++) {
@@ -1728,7 +1866,7 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
               }
               break;
 
-      case 3: animate_Step[pattern]=animate_Step[pattern]%2;
+      case 3: boundAnimateStep(pattern, 2);
               // 2 Alternate L/R     [####    ] Count up c=0->1  s,s+(n/2) *c
               //                     [    ####]                  (n/2),n   *!c
               for(int i = 0; i < (groupWidth/2); i++) {
@@ -1739,7 +1877,7 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
               }
               break;
 
-      case 4: animate_Step[pattern]=animate_Step[pattern]%2;
+      case 4: boundAnimateStep(pattern, 2);
               // 3 Alternate in/out  [##      ##] Count up c=0->1  s,s+(n/4) + n-(n/4),n
               //                     [  ##  ##  ]                  s+(n/4)-(n/2)+(n/4)
               for(int i = 0; i < (groupWidth); i++) {
@@ -1748,7 +1886,7 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
               }
               break;
 
-      case 5: animate_Step[pattern]=animate_Step[pattern]%groupWidth;
+      case 5: boundAnimateStep(pattern, groupWidth);
               // 4 odd/even          [# # # # ]
               //                     [ # # # #]
               for(int i = 0; i < (groupWidth); i++) {
@@ -1757,7 +1895,7 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
               }
               break;
 
-      case 6: animate_Step[pattern]=animate_Step[pattern]%1;
+      case 6: boundAnimateStep(pattern, 1);
               // 10 1/3 gated blink    [###  ###]
               for(int i = 0; i < groupWidth; i++) {
                 if ( i <= (groupWidth/3) or i >= (groupWidth-(groupWidth/3)-1) ) {
@@ -1765,7 +1903,7 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
                 }
               }
               break;
-      case 7: animate_Step[pattern]=animate_Step[pattern]%2;
+      case 7: boundAnimateStep(pattern, 2);
               // gated blink    [###  ###]
               //                [        ]
               for(int i = 0; i < groupWidth; i++) {
@@ -1775,7 +1913,7 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
               }
               break;
 
-      case 8: animate_Step[pattern]=animate_Step[pattern]%(groupWidth);
+      case 8: boundAnimateStep(pattern, groupWidth);
                 // 5 Animate >         [#       ]
                 //                     [ #      ]
                 //                     [  #     ]
@@ -1795,7 +1933,7 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
               //   leds[channelIndex][startLEDIndex+i] = LedConfig.state_color[state];;
               // break;
 
-      case 9: animate_Step[pattern]=animate_Step[pattern]%(groupWidth);
+      case 9: boundAnimateStep(pattern, groupWidth);
               // 6 Animate <         [       #]
               //                     [      # ]
               //                     [     #  ]
@@ -1812,7 +1950,7 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
               ZERO_W(leds[channelIndex][startLEDIndex + groupWidth - animate_Step[pattern] - 1]);
               break;
 
-      case 10: animate_Step[pattern]=animate_Step[pattern]%((groupWidth*2));
+      case 10: boundAnimateStep(pattern, groupWidth*2);
               // 7 Cyon/Kitt         [#       ]
               //                     [ #      ]
               //                     [  #     ]
@@ -1842,7 +1980,7 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
               }
               break;
 
-      case 11: animate_Step[pattern]=animate_Step[pattern]%(groupWidth/2);
+      case 11: boundAnimateStep(pattern, groupWidth/2);
               // 8 Animate ><        [#      #]
               //                     [ #    # ]
               //                     [  #  #  ]
@@ -1857,7 +1995,7 @@ void setLEDGroup(uint8_t group, uint8_t state, uint8_t Pct) {
               ZERO_W(leds[channelIndex][startLEDIndex+groupWidth - animate_Step[pattern] -1]);
               break;
 
-      case 12: animate_Step[pattern]=animate_Step[pattern]%(groupWidth/2);
+      case 12: boundAnimateStep(pattern, groupWidth/2);
 
               // 9 Animate ><        [   ##   ]
               //                     [  #  #  ]
@@ -1917,7 +2055,9 @@ int validateRange(int value, int min, int max, int defaultValue) {
  * @return true if valid, false otherwise
  */
 bool isValidGroup(int groupID) {
-  return (groupID >= MIN_GROUP_ID && groupID <= MAX_GROUPS);
+  return (groupID >= MIN_GROUP_ID &&
+          groupID <= LedConfig.numChannels * LedConfig.numGroupsPerChannel &&
+          groupID <= MAX_GROUPS);
 }
 
 /**
@@ -1936,6 +2076,23 @@ bool isValidState(int state) {
  */
 bool isValidPercent(int percent) {
   return (percent >= 0 && percent <= 100);
+}
+
+/**
+ * Strictly parse a decimal integer, requiring the whole string to be consumed
+ * Used instead of atoi() for configuration setters so empty input, trailing
+ * junk ("12abc"), and out-of-range values do not silently become 0.
+ * @param str Input string to parse
+ * @return Parsed value, or LONG_MIN if str is null, empty, malformed, has
+ *         trailing characters, or overflows
+ */
+long strictParseLong(const char *str) {
+  if (str == NULL || *str == '\0') return LONG_MIN;
+  char *endPtr = NULL;
+  errno = 0;
+  long value = strtol(str, &endPtr, 10);
+  if (endPtr == str || *endPtr != '\0' || errno == ERANGE) return LONG_MIN;
+  return value;
 }
 
 /**
@@ -2031,7 +2188,6 @@ void setConfigParameters(char *Data) {
    char configItem = Data[0];
   char *Value = Data + 2;
   int ValueInt = 0;
-  char *comma = NULL; // Declare outside switch to avoid jump errors
   if (Data[1] == ':') {
     switch (configItem) {
       // set Name-Idenitfier
@@ -2044,27 +2200,30 @@ void setConfigParameters(char *Data) {
           Serial.println(LedConfig.identifier);
         } else {
           Serial.println("Identifier too long, use 16 characters max.");
+          errorCount++;
         }
         break;
       // set led per channel
       case 'l':
-        ValueInt = atoi(Value);
+        ValueInt = strictParseLong(Value);
         if (ValueInt >= NUM_LEDS_PER_CHANNEL_MIN and ValueInt <= NUM_LEDS_PER_CHANNEL_MAX) {
           Serial.print("LEDs per channel      : " );
           LedConfig.numLedsPerChannel = ValueInt;
           Serial.println(LedConfig.numLedsPerChannel);
           FastLED.clearData();
+          Serial.println("NOTE: FastLED controller lengths are fixed at boot. A reboot ('R') is required for this change to fully take effect.");
         } else {
           Serial.print("Invalid number of leds per channel(");
           Serial.print(NUM_LEDS_PER_CHANNEL_MIN);
           Serial.print("-");
           Serial.print(NUM_LEDS_PER_CHANNEL_MAX);
           Serial.println(")");
+          errorCount++;
         }
         break;
       // set groups per channel
       case 't':
-        ValueInt = atoi(Value);
+        ValueInt = strictParseLong(Value);
         if (ValueInt >= 1 and ValueInt <= NUM_GROUPS_PER_CHANNEL_MAX) {
           // Check if total groups would exceed MAX_GROUPS
           if (LedConfig.numChannels * ValueInt > MAX_GROUPS) {
@@ -2077,6 +2236,7 @@ void setConfigParameters(char *Data) {
             Serial.print(" exceeds MAX_GROUPS (");
             Serial.print(MAX_GROUPS);
             Serial.println(")!");
+            errorCount++;
           } else {
             Serial.print("Groups per channel : " );
             LedConfig.numGroupsPerChannel = ValueInt;
@@ -2087,11 +2247,12 @@ void setConfigParameters(char *Data) {
           Serial.print("Invalid number of groups per channel (1-");
           Serial.print(NUM_GROUPS_PER_CHANNEL_MAX);
           Serial.println(")");
+          errorCount++;
         }
         break;
       // set number of channels
       case 's':
-        ValueInt = atoi(Value);
+        ValueInt = strictParseLong(Value);
         if (ValueInt >= 1 and ValueInt <= NUM_CHANNELS_MAX) {
           // Check if total groups would exceed MAX_GROUPS
           if (ValueInt * LedConfig.numGroupsPerChannel > MAX_GROUPS) {
@@ -2104,6 +2265,7 @@ void setConfigParameters(char *Data) {
             Serial.print(" exceeds MAX_GROUPS (");
             Serial.print(MAX_GROUPS);
             Serial.println(")!");
+            errorCount++;
           } else {
             Serial.print("Amount of channels    : " );
             LedConfig.numChannels = ValueInt;
@@ -2114,12 +2276,12 @@ void setConfigParameters(char *Data) {
           Serial.print("Invalid number of channels (1-");
           Serial.print(NUM_CHANNELS_MAX);
           Serial.println(")");
-
+          errorCount++;
         }
         break;
       // set spacer width
       case 'w':
-        ValueInt = atoi(Value);
+        ValueInt = strictParseLong(Value);
         if (ValueInt >= 0 and ValueInt <= SPACER_WIDTH_MAX) {
           Serial.print("Spacer width         : " );
           LedConfig.spacerWidth = ValueInt;
@@ -2129,10 +2291,11 @@ void setConfigParameters(char *Data) {
           Serial.print("Invalid space width(0-");
           Serial.print(SPACER_WIDTH_MAX);
           Serial.println(")");
+          errorCount++;
         }
         break;
       case 'o':
-        ValueInt = atoi(Value);
+        ValueInt = strictParseLong(Value);
         if (ValueInt >= 0 and ValueInt <= START_OFFSET_MAX) {
           Serial.print("Start offset         : " );
           LedConfig.startOffset = ValueInt;
@@ -2142,11 +2305,12 @@ void setConfigParameters(char *Data) {
           Serial.print("Invalid start offset (0-");
           Serial.print(START_OFFSET_MAX);
           Serial.println(")");
+          errorCount++;
         }
         break;
       // Set animate interval
       case 'a':
-        ValueInt = atoi(Value);
+        ValueInt = strictParseLong(Value);
         if (ValueInt >= ANIMATE_INTERVAL_MIN and ValueInt <= ANIMATE_INTERVAL_MAX) {
           Serial.print("Animation interval   : " );
           LedConfig.animateinterval = ValueInt;
@@ -2160,11 +2324,12 @@ void setConfigParameters(char *Data) {
           Serial.print("-");
           Serial.print(ANIMATE_INTERVAL_MAX);
           Serial.println(" msec)");
+          errorCount++;
         }
         break;
       // Set blink interval
       case 'b':
-        ValueInt = atoi(Value);
+        ValueInt = strictParseLong(Value);
         if (ValueInt >= BLINK_INTERVAL_MIN and ValueInt <= BLINK_INTERVAL_MAX) {
           if (ValueInt > LedConfig.updateinterval) {
             Serial.print("Blinking interval    : " );
@@ -2177,6 +2342,7 @@ void setConfigParameters(char *Data) {
             Serial.print("Invalid blinking-interval, needs to be bigger than current update-interval (");
             Serial.print(LedConfig.updateinterval);
             Serial.println(")");
+            errorCount++;
           }
         } else {
           Serial.print("Invalid blink interval (");
@@ -2184,12 +2350,13 @@ void setConfigParameters(char *Data) {
           Serial.print("-");
           Serial.print(BLINK_INTERVAL_MAX);
           Serial.println(" msec)");
+          errorCount++;
         }
           break;
 
       // Set update interval
       case 'u':
-        ValueInt = atoi(Value);
+        ValueInt = strictParseLong(Value);
         if (ValueInt >= UPDATE_INTERVAL_MIN and ValueInt <= UPDATE_INTERVAL_MAX) {
           if (ValueInt < LedConfig.blinkinterval) {
             Serial.print("Update interval      : ");
@@ -2205,6 +2372,7 @@ void setConfigParameters(char *Data) {
             Serial.print("Invalid update-interval, needs to be smaller than current blink-interval (");
             Serial.print(LedConfig.blinkinterval);
             Serial.println(")");
+            errorCount++;
           }
         } else {
           Serial.print("Invalid update interval (");
@@ -2212,13 +2380,14 @@ void setConfigParameters(char *Data) {
           Serial.print("-");
           Serial.print(UPDATE_INTERVAL_MAX);
           Serial.println(" msec)");
+          errorCount++;
         }
         break;
 
       // Set Brightness Inetensity
       case 'i':
-        ValueInt = atoi(Value);
-        if (ValueInt >= BRIGHTNESS_MIN and ValueInt <= BRIGHTNESS_MAX) {
+        ValueInt = strictParseLong(Value);
+        if (ValueInt >= STRIP_BRIGHTNESS_MIN and ValueInt <= STRIP_BRIGHTNESS_MAX) {
           Serial.print("Brightness intensity   : " );
           LedConfig.brightness = ValueInt;
           Serial.println(LedConfig.brightness);
@@ -2226,15 +2395,16 @@ void setConfigParameters(char *Data) {
           FastLED.clearData();
 
           // Warn if brightness is very high
-          if (ValueInt > BRIGHTNESS_WARNING_THRESHOLD) {
+          if (ValueInt > STRIP_BRIGHTNESS_WARNING_THRESHOLD) {
             Serial.println("WARNING: High brightness may cause overheating or exceed power supply capacity!");
           }
         } else {
           Serial.print("Invalid brightness intensity (");
-          Serial.print(BRIGHTNESS_MIN);
+          Serial.print(STRIP_BRIGHTNESS_MIN);
           Serial.print("-");
-          Serial.print(BRIGHTNESS_MAX);
+          Serial.print(STRIP_BRIGHTNESS_MAX);
           Serial.println(")");
+          errorCount++;
         }
         break;
 
@@ -2247,7 +2417,7 @@ void setConfigParameters(char *Data) {
           int idx = 0;
           bool valid = true;
           while (token != NULL && idx < 3) {
-            int parsed = atoi(token);
+            long parsed = strictParseLong(token);
             if (parsed < 0 || parsed > 255) {
               valid = false;
               break;
@@ -2258,8 +2428,10 @@ void setConfigParameters(char *Data) {
 
           if (!valid) {
             Serial.println("Invalid fade values (0-255)");
+            errorCount++;
           } else if (idx == 0) {
             Serial.println("Usage: Cf:<anim>:<fade-in>:<fade-out>");
+            errorCount++;
           } else if (idx == 1) {
             // Backwards compatibility: Cf:<Value>
             LedConfig.fadingAnimation = values[0];
@@ -2319,6 +2491,7 @@ void setConfigParameters(char *Data) {
             FastLED.clearData();
           } else {
             Serial.println("Invalid channel order. Use: N (standard 12345678) or custom like 43215678");
+            errorCount++;
           }
         }
         break;
@@ -2333,6 +2506,7 @@ void setConfigParameters(char *Data) {
           Serial.println("Startup animation    : Enabled");
         } else {
           Serial.println("Invalid Value, use Y/N or 1/0");
+          errorCount++;
         }
         break;
 
@@ -2346,6 +2520,7 @@ void setConfigParameters(char *Data) {
           Serial.println("Local echo           : Enabled");
         } else {
           Serial.println("Invalid Value, use Y/N or 1/0");
+          errorCount++;
         }
         break;
 
@@ -2375,10 +2550,12 @@ void setConfigParameters(char *Data) {
         Serial.print("SYNTAX ERROR: Configuration item '");
         Serial.print(configItem);
         Serial.println("' unknown. Use H for help.");
+        errorCount++;
         break;
     }
   } else {
     Serial.println("SYNTAX ERROR: Invalid configuration format. Use C<item>:<value> format, H for help.");
+    errorCount++;
   }
 }
 
@@ -2388,45 +2565,60 @@ void setConfigParameters(char *Data) {
  */
 void setLedStripGPIO(char *Value) {
   if (Value[1] == ':') {
-    uint8_t channel = Value[0] - '0' -1;
-
-    if (channel < NUM_CHANNELS_DEFAULT) {  // channel is uint8_t, always >= 0
+    char channelChar = Value[0];
+    // Validate the channel digit explicitly before converting, so a
+    // non-digit character is rejected instead of wrapping around as an
+    // unsigned value.
+    if (channelChar < '1' || channelChar > ('0' + NUM_CHANNELS_MAX)) {
+      Serial.print  ("Invalid channel, 1-");
+      Serial.print  (NUM_CHANNELS_MAX);
+      Serial.println(" only.");
+      errorCount++;
+    } else {
+      uint8_t channel = (uint8_t)(channelChar - '1');
       char *GPIO_RAW = Value + 2;
-      uint8_t GPIO_PIN = strtoul(GPIO_RAW, NULL, 16);
-      if (GPIO_PIN >= GPIO_PIN_MIN && GPIO_PIN <= GPIO_PIN_MAX) {
+      long gpioLong = strictParseLong(GPIO_RAW);
+      if (gpioLong >= GPIO_PIN_MIN && gpioLong <= GPIO_PIN_MAX) {
+        uint8_t GPIO_PIN = (uint8_t)gpioLong;
 
         // Test if GPIO pin is not assigned already
+        bool conflict = false;
         for (uint8_t CHANNEL=0; CHANNEL<NUM_CHANNELS_DEFAULT ; CHANNEL++) {
           if (GPIO_PIN == LedConfig.channelGPIOpin[CHANNEL]) {
             Serial.print("ERROR: GPIO-PIN ");
             Serial.print(GPIO_PIN);
             Serial.print(" is already used for channel ");
-            Serial.print(CHANNEL);
-            Serial.print(" !");
-            return;
+            Serial.print(CHANNEL + 1);
+            Serial.println(" !");
+            errorCount++;
+            conflict = true;
+            break;
           }
         }
-        if (GPIO_PIN == CPULED_GPIO) {
+        if (!conflict && GPIO_PIN == CPULED_GPIO) {
           Serial.print("ERROR: GPIO-PIN ");
           Serial.print(GPIO_PIN);
-          Serial.print(" is already used for CPULED !");
-          return;
+          Serial.println(" is already used for CPULED !");
+          errorCount++;
+          conflict = true;
         }
 
-        LedConfig.channelGPIOpin[channel] = GPIO_PIN;
-        Serial.print("GPIO-PIN for channel ");
-        Serial.print(channel + 1);  // Display 1-based channel number
-        Serial.print(" is set to : ");
-        Serial.print(LedConfig.channelGPIOpin[channel]);
-        Serial.println();
-        Serial.println("Please note a MCU reboot is required to activate a change in GPIO pin assignments");
+        if (!conflict) {
+          LedConfig.channelGPIOpin[channel] = GPIO_PIN;
+          Serial.print("GPIO-PIN for channel ");
+          Serial.print(channel + 1);  // Display 1-based channel number
+          Serial.print(" is set to : ");
+          Serial.print(LedConfig.channelGPIOpin[channel]);
+          Serial.println();
+          Serial.println("Please note a MCU reboot is required to activate a change in GPIO pin assignments");
+        }
       } else {
-        Serial.println("Invalid GPIO-PIN number.");
+        Serial.print("Invalid GPIO-PIN number, use decimal ");
+        Serial.print(GPIO_PIN_MIN);
+        Serial.print("-");
+        Serial.println(GPIO_PIN_MAX);
+        errorCount++;
       }
-    } else {
-      Serial.print  ("Invalid channel, 1-");
-      Serial.print  (NUM_CHANNELS_MAX);
-      Serial.println(" only.");
     }
   } else {
       Serial.print  ("Syntax error: use Cx:<channel>:<GPIO-PIN>     (<channel>: 1-");
@@ -2450,8 +2642,11 @@ void setLedstateColor(char *Value) {
     int state = Value[0] - '0';
     if (state > 0 && state <= 9) {
       char *Color = Value + 2;
-      uint32_t RGB = strtoul(Color, NULL, 16);
-      if (RGB > 0 && RGB <= 0xFFFFFF) {
+      // Require exactly 6 hex digits, fully consumed, so trailing junk or a
+      // short/long value can't be silently accepted as a different color.
+      char *endPtr = NULL;
+      uint32_t RGB = strtoul(Color, &endPtr, 16);
+      if (strlen(Color) == 6 && endPtr == Color + 6 && RGB <= 0xFFFFFF) {
         LedConfig.state_color[state] = RGB + 0xFF000000; // Add brightness
         Serial.print("Color for state ");
         Serial.print(state);
@@ -2463,14 +2658,17 @@ void setLedstateColor(char *Value) {
         Serial.print(buffer);
         Serial.println(" (RR GG BB)");
       } else {
-        Serial.println("Invalid color (use 000001-FFFFFF)");
+        Serial.println("Invalid color, use exactly 6 hex digits (000000-FFFFFF)");
+        errorCount++;
       }
     } else {
       Serial.println("Invalid state, use 1-9");
+      errorCount++;
     }
   } else {
     Serial.println("Syntax error: use Cc:<state>:<RRGGBB>   (<state>: 1-9, <RRGGBB>: Color in Hex)");
     Serial.println();
+    errorCount++;
   }
 }
 
@@ -2483,12 +2681,13 @@ void setLedstatePattern(char *Value) {
 //         0123
 
   if (Value[1] == ':') {
-    Value[4] = 0; // Limit to 2 chars (digits) for pattern
     uint8_t state = Value[0] - '0';
     if (state >= 1 && state <= 9) {
-      int pattern = atoi(Value + 2);
+      // Require the full remainder to be a valid integer (no trailing junk);
+      // this no longer truncates the input buffer to parse.
+      long pattern = strictParseLong(Value + 2);
       if (pattern >= 0 && pattern <= PATTERN_MAX) {
-        LedConfig.state_pattern[state] = pattern;
+        LedConfig.state_pattern[state] = (uint8_t)pattern;
         Serial.print("Pattern for state ");
         Serial.print(state);
         Serial.print(" is set to : ");
@@ -2497,14 +2696,17 @@ void setLedstatePattern(char *Value) {
       } else {
         Serial.print("Invalid pattern, use 0-");
         Serial.println(PATTERN_MAX);
+        errorCount++;
       }
     } else {
       Serial.println("Invalid state, use 1-9");
+      errorCount++;
     }
   } else {
     Serial.print("Syntax error: use Cp:<state>:<pattern>   (<state>: 1-9, <pattern>: 0-");
     Serial.print(PATTERN_MAX);
     Serial.println(")");
+    errorCount++;
   }
 }
 
@@ -2515,6 +2717,8 @@ void setLedstatePattern(char *Value) {
 void resetToDefaults() {
   CPULED(0x00,0x00,0x80);
 
+  strncpy(LedConfig.formatId, CONFIG_IDENTIFIER, sizeof(LedConfig.formatId) - 1);
+  LedConfig.formatId[sizeof(LedConfig.formatId) - 1] = '\0';
   strcpy(LedConfig.identifier, IDENTIFIER_DEFAULT);
   LedConfig.numLedsPerChannel = NUM_LEDS_PER_CHANNEL_DEFAULT;
   LedConfig.numChannels = NUM_CHANNELS_DEFAULT;
@@ -2523,11 +2727,13 @@ void resetToDefaults() {
   LedConfig.startOffset = START_OFFSET;
   LedConfig.blinkinterval = BLINK_INTERVAL;
   LedConfig.updateinterval = UPDATE_INTERVAL;
-  LedConfig.brightness = BRIGHTNESS;
+  LedConfig.brightness = STRIP_BRIGHTNESS;
   LedConfig.animateinterval = ANIMATE_INTERVAL;
   LedConfig.fadingAnimation = FADING;
   LedConfig.fading2StepIn = FADING_2STEP_IN;
   LedConfig.fading2StepOut = FADING_2STEP_OUT;
+  LedConfig.startupAnimation = STARTUP_ANIMATION;
+  LedConfig.localEcho = LOCAL_ECHO;
   LedConfig.channelOrder[0] = 1; LedConfig.channelOrder[1] = 2; LedConfig.channelOrder[2] = 3; LedConfig.channelOrder[3] = 4;
   LedConfig.channelOrder[4] = 5; LedConfig.channelOrder[5] = 6; LedConfig.channelOrder[6] = 7; LedConfig.channelOrder[7] = 8;
   LedConfig.state_pattern[0] = 0; // Fixed since this is black.
@@ -2540,6 +2746,7 @@ void resetToDefaults() {
   LedConfig.state_pattern[7] = 1; // blink by default
   LedConfig.state_pattern[8] = 1; // blink by default
   LedConfig.state_pattern[9] = 10; // up/down
+  LedConfig.state_color[0] = CRGB::Black;
   LedConfig.state_color[1] = COLOR_STATE_1;
   LedConfig.state_color[2] = COLOR_STATE_2;
   LedConfig.state_color[3] = COLOR_STATE_3;
@@ -2557,7 +2764,6 @@ void resetToDefaults() {
   LedConfig.channelGPIOpin[5] = 7;
   LedConfig.channelGPIOpin[6] = 8;
   LedConfig.channelGPIOpin[7] = 9;
-  LedConfig.localEcho = LOCAL_ECHO;
 }
 
 /**
@@ -2653,7 +2859,7 @@ void showConfiguration() {
  * @param path File path to read from
  * @return Pointer to allocated buffer containing file Data, or nullptr if failed
  */
-char* readFile(const char * path) {
+char* readFile(const char * path, long *outSize) {
   CPULED(0x00,0x00,0x80);
   File fileH = LittleFS.open(F(path), "r");
   if (!fileH) {
@@ -2662,6 +2868,7 @@ char* readFile(const char * path) {
   }
 
   long fileSize=fileH.size();
+  if (outSize) *outSize = fileSize;
   if (fileSize > 0) {
     char *Data = new char[fileSize+1];
     if (Data == nullptr) {
@@ -2705,6 +2912,176 @@ bool writeFile(const char * path, const char * Data, size_t DataSize) {
 }
 
 /**
+ * Validate and correct a configuration struct in place
+ * Shared by file load, hex import, and runtime defaults so every path that can
+ * produce a configuration applies the same semantic checks.
+ * @param cfg Configuration to validate (corrected in place)
+ * @return true if any value was out of range and corrected
+ */
+bool validateConfig(LedData &cfg) {
+  bool needsCorrection = false;
+
+  // Detect a persisted/imported struct from an incompatible firmware build.
+  // Raw-struct persistence is layout-sensitive; every field below is still
+  // clamped defensively, but flag the mismatch so it's visible rather than
+  // silently accepted.
+  if (strncmp(cfg.formatId, CONFIG_IDENTIFIER, sizeof(cfg.formatId)) != 0) {
+    Serial.println("WARNING: Configuration format identifier mismatch (saved with a different firmware build); values are being validated defensively.");
+    strncpy(cfg.formatId, CONFIG_IDENTIFIER, sizeof(cfg.formatId) - 1);
+    cfg.formatId[sizeof(cfg.formatId) - 1] = '\0';
+    needsCorrection = true;
+  }
+
+  // Identifier must always be NUL-terminated
+  if (cfg.identifier[IDENTIFIER_MAX_LENGTH - 1] != '\0') {
+    cfg.identifier[IDENTIFIER_MAX_LENGTH - 1] = '\0';
+    needsCorrection = true;
+  }
+
+  if (cfg.numLedsPerChannel < NUM_LEDS_PER_CHANNEL_MIN || cfg.numLedsPerChannel > NUM_LEDS_PER_CHANNEL_MAX) {
+    cfg.numLedsPerChannel = NUM_LEDS_PER_CHANNEL_DEFAULT;
+    needsCorrection = true;
+  }
+
+  if (cfg.numChannels < 1 || cfg.numChannels > NUM_CHANNELS_MAX) {
+    cfg.numChannels = NUM_CHANNELS_DEFAULT;
+    needsCorrection = true;
+  }
+
+  if (cfg.numGroupsPerChannel < 1 || cfg.numGroupsPerChannel > NUM_GROUPS_PER_CHANNEL_MAX) {
+    cfg.numGroupsPerChannel = NUM_GROUPS_PER_CHANNEL_DEFAULT;
+    needsCorrection = true;
+  }
+
+  // Critical: Ensure total groups doesn't exceed MAX_GROUPS (cast to avoid uint8_t overflow)
+  if ((uint16_t)cfg.numChannels * (uint16_t)cfg.numGroupsPerChannel > MAX_GROUPS) {
+    Serial.println("WARNING: numChannels * numGroupsPerChannel exceeds MAX_GROUPS!");
+    cfg.numChannels = NUM_CHANNELS_DEFAULT;
+    cfg.numGroupsPerChannel = NUM_GROUPS_PER_CHANNEL_DEFAULT;
+    needsCorrection = true;
+  }
+
+  if (cfg.spacerWidth > SPACER_WIDTH_MAX) {
+    cfg.spacerWidth = SPACER_WIDTH_DEFAULT;
+    needsCorrection = true;
+  }
+
+  if (cfg.startOffset > START_OFFSET_MAX) {
+    cfg.startOffset = START_OFFSET;
+    needsCorrection = true;
+  }
+
+  // Combined geometry: a complete group must fit inside the configured strip
+  // with positive width; otherwise rendering divides by zero or writes
+  // out of bounds. Reset the geometry fields as a set when inconsistent.
+  {
+    const uint16_t segmentWidth = cfg.numLedsPerChannel / cfg.numGroupsPerChannel;
+    const uint32_t lastGroupEnd = (uint32_t)cfg.startOffset +
+                                  (uint32_t)(cfg.numGroupsPerChannel - 1) * segmentWidth +
+                                  (uint32_t)(segmentWidth - cfg.spacerWidth);
+    if (segmentWidth == 0 || cfg.spacerWidth >= segmentWidth || lastGroupEnd > cfg.numLedsPerChannel) {
+      cfg.numGroupsPerChannel = NUM_GROUPS_PER_CHANNEL_DEFAULT;
+      cfg.spacerWidth = SPACER_WIDTH_DEFAULT;
+      cfg.startOffset = START_OFFSET;
+      needsCorrection = true;
+    }
+  }
+
+  if (cfg.blinkinterval < BLINK_INTERVAL_MIN || cfg.blinkinterval > BLINK_INTERVAL_MAX) {
+    cfg.blinkinterval = BLINK_INTERVAL;
+    needsCorrection = true;
+  }
+
+  if (cfg.animateinterval < ANIMATE_INTERVAL_MIN || cfg.animateinterval > ANIMATE_INTERVAL_MAX) {
+    cfg.animateinterval = ANIMATE_INTERVAL;
+    needsCorrection = true;
+  }
+
+  if (cfg.updateinterval < UPDATE_INTERVAL_MIN || cfg.updateinterval > UPDATE_INTERVAL_MAX) {
+    cfg.updateinterval = UPDATE_INTERVAL;
+    needsCorrection = true;
+  }
+
+  // Blinking must stay slower than the refresh interval, same rule as the
+  // runtime Cb/Cu commands.
+  if (cfg.blinkinterval <= cfg.updateinterval) {
+    cfg.blinkinterval = BLINK_INTERVAL;
+    cfg.updateinterval = UPDATE_INTERVAL;
+    needsCorrection = true;
+  }
+
+  if (cfg.brightness < STRIP_BRIGHTNESS_MIN || cfg.brightness > STRIP_BRIGHTNESS_MAX) {
+    cfg.brightness = STRIP_BRIGHTNESS;
+    needsCorrection = true;
+  }
+
+  if (cfg.fadingAnimation > 255 || cfg.fading2StepIn > 255 || cfg.fading2StepOut > 255) {
+    cfg.fadingAnimation = FADING;
+    cfg.fading2StepIn = FADING_2STEP_IN;
+    cfg.fading2StepOut = FADING_2STEP_OUT;
+    needsCorrection = true;
+  }
+
+  // Patterns index animate_Step[]; anything above PATTERN_MAX is undefined
+  for (uint8_t i = 0; i <= MAX_STATE; i++) {
+    if (cfg.state_pattern[i] > PATTERN_MAX) {
+      cfg.state_pattern[i] = 0;
+      needsCorrection = true;
+    }
+  }
+
+  // Channel order must be a permutation of 1..NUM_CHANNELS_MAX; a 0 or a
+  // duplicate would index leds[] out of bounds
+  {
+    bool seen[NUM_CHANNELS_MAX + 1] = {false};
+    bool orderValid = true;
+    for (uint8_t i = 0; i < NUM_CHANNELS_MAX; i++) {
+      uint8_t ch = cfg.channelOrder[i];
+      if (ch < 1 || ch > NUM_CHANNELS_MAX || seen[ch]) {
+        orderValid = false;
+        break;
+      }
+      seen[ch] = true;
+    }
+    if (!orderValid) {
+      for (uint8_t i = 0; i < NUM_CHANNELS_MAX; i++) {
+        cfg.channelOrder[i] = i + 1;
+      }
+      needsCorrection = true;
+    }
+  }
+
+  // Validate GPIO pins are within range, not the CPU LED, and unique
+  for (uint8_t i = 0; i < NUM_CHANNELS_MAX; i++) {
+    if (cfg.channelGPIOpin[i] < GPIO_PIN_MIN || cfg.channelGPIOpin[i] > GPIO_PIN_MAX ||
+        cfg.channelGPIOpin[i] == CPULED_GPIO) {
+      cfg.channelGPIOpin[i] = i + GPIO_PIN_MIN; // Reset to default sequential pins
+      needsCorrection = true;
+    }
+    // Check for duplicate GPIO pins
+    for (uint8_t j = i + 1; j < NUM_CHANNELS_MAX; j++) {
+      if (cfg.channelGPIOpin[i] == cfg.channelGPIOpin[j]) {
+        Serial.print("WARNING: Duplicate GPIO pin ");
+        Serial.print(cfg.channelGPIOpin[j]);
+        Serial.println(" detected, resetting to defaults");
+        // Reset all GPIO pins to defaults
+        for (uint8_t k = 0; k < NUM_CHANNELS_MAX; k++) {
+          cfg.channelGPIOpin[k] = k + GPIO_PIN_MIN;
+        }
+        needsCorrection = true;
+        break;
+      }
+    }
+  }
+
+  // Normalize bools in case a corrupt image stored a non-0/1 byte
+  cfg.startupAnimation = cfg.startupAnimation ? true : false;
+  cfg.localEcho = cfg.localEcho ? true : false;
+
+  return needsCorrection;
+}
+
+/**
  * Load configuration from LittleFS file
  * Reads saved configuration and applies it to LedConfig struct
  * @return true if successful, false if file not found or invalid
@@ -2712,13 +3089,24 @@ bool writeFile(const char * path, const char * Data, size_t DataSize) {
 bool loadConfiguration() {
   CPULED(0x00,0x00,0x80);
 
-  char *buffer;
-  buffer = readFile(CONFIG_FILENAME);
+  long fileSize = 0;
+  char *buffer = readFile(CONFIG_FILENAME, &fileSize);
   if (buffer != 0) {
 
     // Calculate sizes to separate struct and checksum in buffer
-    int structSize=sizeof(LedData);
-    int totalSize = structSize + 32;  // 32 for the saved binary checksum
+    const int structSize = sizeof(LedData);
+    const int totalSize = structSize + 32;  // 32 for the saved binary checksum
+
+    // Require an exact-size file before touching its contents
+    if (fileSize != totalSize) {
+      Serial.print("Configuration size mismatch (expected ");
+      Serial.print(totalSize);
+      Serial.print(" bytes, got ");
+      Serial.print(fileSize);
+      Serial.println("), using defaults.");
+      delete[] buffer;
+      return false;
+    }
 
     // Separate the Data and the checksum
     uint8_t loadedChecksum[32];
@@ -2733,88 +3121,14 @@ bool loadConfiguration() {
 
     // Compare the loaded checksum with the recalculated checksum
     if (memcmp(loadedChecksum, calculatedChecksum, 32) == 0) {
-      // Checksums match, proceed to load LedConfig
-      // DeSerialize buffer into LedData Struct
-      memcpy(&LedConfig, buffer, structSize);
+      // Checksums match: deserialize into a temporary struct and validate
+      // before it replaces the live configuration
+      LedData temp;
+      memcpy(&temp, buffer, structSize);
       delete[] buffer;  // Free memory
 
-      // Validate and clamp all Values to safe ranges
-      bool needsCorrection = false;
-
-      if (LedConfig.numLedsPerChannel < NUM_LEDS_PER_CHANNEL_MIN || LedConfig.numLedsPerChannel > NUM_LEDS_PER_CHANNEL_MAX) {
-        LedConfig.numLedsPerChannel = NUM_LEDS_PER_CHANNEL_DEFAULT;
-        needsCorrection = true;
-      }
-
-      if (LedConfig.numChannels < 1 || LedConfig.numChannels > NUM_CHANNELS_MAX) {
-        LedConfig.numChannels = NUM_CHANNELS_DEFAULT;
-        needsCorrection = true;
-      }
-
-      if (LedConfig.numGroupsPerChannel < 1 || LedConfig.numGroupsPerChannel > NUM_GROUPS_PER_CHANNEL_MAX) {
-        LedConfig.numGroupsPerChannel = NUM_GROUPS_PER_CHANNEL_DEFAULT;
-        needsCorrection = true;
-      }
-
-      // Critical: Ensure total groups doesn't exceed MAX_GROUPS (cast to avoid uint8_t overflow)
-      if ((uint16_t)LedConfig.numChannels * (uint16_t)LedConfig.numGroupsPerChannel > MAX_GROUPS) {
-        Serial.println("WARNING: numChannels * numGroupsPerChannel exceeds MAX_GROUPS!");
-        LedConfig.numChannels = NUM_CHANNELS_DEFAULT;
-        LedConfig.numGroupsPerChannel = NUM_GROUPS_PER_CHANNEL_DEFAULT;
-        needsCorrection = true;
-      }
-
-      if (LedConfig.spacerWidth > SPACER_WIDTH_MAX) {
-        LedConfig.spacerWidth = SPACER_WIDTH_DEFAULT;
-        needsCorrection = true;
-      }
-
-      if (LedConfig.startOffset > START_OFFSET_MAX) {
-        LedConfig.startOffset = START_OFFSET;
-        needsCorrection = true;
-      }
-
-      if (LedConfig.blinkinterval < BLINK_INTERVAL_MIN || LedConfig.blinkinterval > BLINK_INTERVAL_MAX) {
-        LedConfig.blinkinterval = BLINK_INTERVAL;
-        needsCorrection = true;
-      }
-
-      if (LedConfig.animateinterval < ANIMATE_INTERVAL_MIN || LedConfig.animateinterval > ANIMATE_INTERVAL_MAX) {
-        LedConfig.animateinterval = ANIMATE_INTERVAL;
-        needsCorrection = true;
-      }
-
-      if (LedConfig.updateinterval < UPDATE_INTERVAL_MIN || LedConfig.updateinterval > UPDATE_INTERVAL_MAX) {
-        LedConfig.updateinterval = UPDATE_INTERVAL;
-        needsCorrection = true;
-      }
-
-      if (LedConfig.brightness < BRIGHTNESS_MIN || LedConfig.brightness > BRIGHTNESS_MAX) {
-        LedConfig.brightness = BRIGHTNESS;
-        needsCorrection = true;
-      }
-
-      // Validate GPIO pins are within range and check for duplicates
-      for (uint8_t i = 0; i < NUM_CHANNELS_MAX; i++) {
-        if (LedConfig.channelGPIOpin[i] < GPIO_PIN_MIN || LedConfig.channelGPIOpin[i] > GPIO_PIN_MAX) {
-          LedConfig.channelGPIOpin[i] = i + GPIO_PIN_MIN; // Reset to default sequential pins
-          needsCorrection = true;
-        }
-        // Check for duplicate GPIO pins
-        for (uint8_t j = i + 1; j < NUM_CHANNELS_MAX; j++) {
-          if (LedConfig.channelGPIOpin[i] == LedConfig.channelGPIOpin[j]) {
-            Serial.print("WARNING: Duplicate GPIO pin ");
-            Serial.print(LedConfig.channelGPIOpin[j]);
-            Serial.println(" detected, resetting to defaults");
-            // Reset all GPIO pins to defaults
-            for (uint8_t k = 0; k < NUM_CHANNELS_MAX; k++) {
-              LedConfig.channelGPIOpin[k] = k + GPIO_PIN_MIN;
-            }
-            needsCorrection = true;
-            break;
-          }
-        }
-      }
+      bool needsCorrection = validateConfig(temp);
+      LedConfig = temp;
 
       Serial.println("Checksum matches, configuration loaded.");
       if (needsCorrection) {
@@ -2840,7 +3154,10 @@ bool loadConfiguration() {
 
 /**
  * Save current configuration to LittleFS file
- * Writes LedConfig struct to flash memory for persistence
+ * Writes LedConfig struct to flash memory for persistence. The new data is
+ * written to a temporary file and then renamed over the real config file, so
+ * a reset/power loss mid-write leaves the previous known-good file intact
+ * instead of a truncated/corrupt one.
  * @return true if successful, false otherwise
  */
 bool saveConfiguration() {
@@ -2861,8 +3178,23 @@ bool saveConfiguration() {
   memcpy(finalBuffer, buffer, sizeof(buffer));     // Copy serialized LedData
   memcpy(finalBuffer + sizeof(buffer), hash, 32);  // Copy binary checksum after the Data (append)
 
-  // Write the combined buffer to the file
-  return writeFile(CONFIG_FILENAME, finalBuffer, sizeof(finalBuffer));
+  // Write to a temp file first...
+  if (!writeFile(CONFIG_FILENAME_TMP, finalBuffer, sizeof(finalBuffer))) {
+    LittleFS.remove(CONFIG_FILENAME_TMP);
+    return false;
+  }
+
+  // ...then atomically replace the real config file. This is the only step
+  // that can be interrupted without losing the previous good configuration:
+  // either the rename completes and the new file is live, or it doesn't and
+  // the old config.bin (if any) is still there untouched.
+  if (!LittleFS.rename(CONFIG_FILENAME_TMP, CONFIG_FILENAME)) {
+    Serial.println("* Rename to final config file failed");
+    LittleFS.remove(CONFIG_FILENAME_TMP);
+    return false;
+  }
+
+  return true;
 }
 
 /**
@@ -2903,6 +3235,7 @@ void StartupLoop() {
     }
     FastLED.show();
     FadeAll(0,LedConfig.numLedsPerChannel,1.4);
+    watchdog_update();  // Long animations can exceed the watchdog timeout
     delay(DELAY);
   }
 
@@ -2910,9 +3243,11 @@ void StartupLoop() {
   setAllLEDs(CRGB::Green);
   FastLED.show();
   delay(75);
+  watchdog_update();
   for(int i = 0; i < 12; i++) {
     FadeAll(0,LedConfig.numLedsPerChannel,1.5);
     FastLED.show();
+    watchdog_update();
     delay(65);
   }
 
@@ -2924,31 +3259,84 @@ void StartupLoop() {
 // BitBang code for CPU led (can't use FastLED as all 8 PIO chanels are used for the ledstrips)
 //
 
-// WS2812B CPULED timing (125 MHz = 8ns per cycle)
-// T0H: 400ns = 50 cycles, T0L: 850ns = 106 cycles
-// T1H: 800ns = 100 cycles, T1L: 450ns = 56 cycles
-// Subtract ~8 cycles for gpio_put() overhead
-#define T1H  92   // 800ns (100 cycles - 8 overhead)
-#define T1L  48   // 450ns (56 cycles - 8 overhead)
-#define T0H  42   // 400ns (50 cycles - 8 overhead)
-#define T0L  98   // 850ns (106 cycles - 8 overhead)
+// WS2812B CPULED bit timing targets: T0H 400ns, T0L 850ns, T1H 800ns, T1L 450ns.
+//
+// delay_cycles() previously used a plain C while-loop, on the assumption that
+// each iteration cost ~4 CPU cycles. Measured via objdump against the actual
+// compiled binary, the loop the compiler generated actually cost 7 cycles per
+// iteration (extra compare/branch overhead), making every delay ~75% longer
+// than intended -- enough to push both '0' and '1' bit pulses out of WS2812
+// spec and make the LED latch onto garbage (observed as solid bright white
+// instead of flashing/glowing).
+//
+// delay_cycles() is now hand-written in raw assembly using the "subs; bne"
+// idiom: a well-documented, exact 3-cycles-per-iteration loop on Cortex-M0+
+// (1 cycle for SUBS, 2 cycles for a taken BNE, 1 on the final not-taken
+// pass), independent of compiler version/optimization level.
+//
+// The surrounding per-bit overhead in sendByte_CPULED() (the bit test/
+// branch, register bookkeeping, the bl/bx call overhead, and the GPIO
+// stores) was then measured by objdumping the actual compiled binary and
+// costing each instruction against the ARM Cortex-M0+ Technical Reference
+// Manual's instruction timing table (1 cycle for MOVS/SUBS/TST/ASRS/LSLS;
+// 1 cycle for STR to the RP2040 SIO single-cycle IO block used by
+// gpio_put(); 2 cycles for a stack LDR; 1/2 cycles for a not-taken/taken
+// conditional branch; 2 for an unconditional B; 3 for BL). This gave four
+// *different* per-segment overheads (the T1H/T0H high-side overhead is 10
+// cycles; T1L's low-side overhead is 15; T0L's is 17, because its path
+// includes an extra jump into shared code) -- a single shared estimate,
+// as used previously, cannot be exact for all four segments simultaneously.
+//
+// These overhead constants are tied to the *exact* instruction sequence
+// generated for sendByte_CPULED() by this compiler/optimization level; if
+// the toolchain or this function's code changes, re-derive them the same
+// way (objdump the .elf, cost each instruction from the table above) rather
+// than assuming they still apply. This remains a software-timed path (not
+// a hardware PIO state machine); prefer a PIO-based driver if it ever needs
+// to be bulletproof against compiler changes. See AGENTS.md.
+constexpr float CPULED_NS_PER_CYCLE = 1000000000.0f / (float)F_CPU;
+constexpr uint32_t cpuledIterations(float ns, uint32_t overheadCycles) {
+  uint32_t targetCycles = (uint32_t)(ns / CPULED_NS_PER_CYCLE + 0.5f);
+  uint32_t remaining = (targetCycles > overheadCycles) ? (targetCycles - overheadCycles) : 3;
+  uint32_t iterations = (remaining + 1) / 3;  // delay_cycles() loop: 3 cycles/iteration, round to nearest
+  return (iterations > 0) ? iterations : 1;
+}
+// These MUST be true compile-time constants (not just calls to a constexpr
+// function from a non-constant context), otherwise the arithmetic inside
+// cpuledIterations() could run at every single bit send instead of being
+// folded away. A constexpr variable initializer is guaranteed to be
+// evaluated at compile time (it's a compile error otherwise), so use
+// variables here, not macros expanding to a plain function call.
+constexpr uint32_t T1H = cpuledIterations(800.0f, 10);  // 800ns high time for a '1' bit
+constexpr uint32_t T1L = cpuledIterations(450.0f, 15);  // 450ns low time for a '1' bit
+constexpr uint32_t T0H = cpuledIterations(400.0f, 10);  // 400ns high time for a '0' bit
+constexpr uint32_t T0L = cpuledIterations(850.0f, 17);  // 850ns low time for a '0' bit
 #define RESET_TIME 60  // >50us reset time
 
-inline void delay_cycles(uint32_t cycles) {
-    // Simple cycle delay - each iteration is ~4 cycles
-    while (cycles >= 4) {
-        __asm volatile ("nop");
-        cycles -= 4;
-    }
+/**
+ * Busy-wait for (approximately) iterations * 3 CPU cycles.
+ * @param iterations Number of loop iterations to run (see T1H/T1L/T0H/T0L)
+ */
+__attribute__((noinline)) void delay_cycles(uint32_t iterations) {
+  if (iterations == 0) return;
+  __asm volatile (
+    ".syntax unified \n"     // required for GAS to accept the 3-operand SUBS form below
+    "1: \n"
+    "   subs %0, %0, #1 \n"  // 1 cycle
+    "   bne 1b \n"           // 2 cycles taken, 1 cycle on the final (not-taken) pass
+    : "+l" (iterations)      // must be a low register (r0-r7) for Thumb16 SUBS
+    :
+    : "cc"
+  );
 }
 
 /**
  * Send a single byte to CPU LED via bit-banging
+ * Caller is responsible for the surrounding critical section; this function
+ * does not touch interrupts so that a full RGB triplet can be sent atomically.
  * @param byte Byte Value to send to CPU LED
  */
 void sendByte_CPULED(uint8_t byte) {
-  // Disable interrupts for precise timing
-  noInterrupts();
   for (int i = 7; i >= 0; i--) {
     if (byte & (1 << i)) {
       gpio_put(CPULED_GPIO, 1);
@@ -2962,7 +3350,25 @@ void sendByte_CPULED(uint8_t byte) {
       delay_cycles(T0L);
     }
   }
-  interrupts();
+}
+
+/**
+ * Send one RGB triplet to the CPU LED in a single critical section
+ * Disables interrupts for the whole R/G/B sequence (rather than per byte) so
+ * a nested or nearly-simultaneous call cannot interleave colors or leave
+ * interrupts incorrectly enabled/disabled. The previous interrupt state is
+ * saved and restored instead of unconditionally re-enabling interrupts.
+ * @param r Red component (0-255)
+ * @param g Green component (0-255)
+ * @param b Blue component (0-255)
+ */
+void sendRGB_CPULED(uint8_t r, uint8_t g, uint8_t b) {
+  uint32_t interruptStatus = save_and_disable_interrupts();
+  sendByte_CPULED(r);
+  sendByte_CPULED(g);
+  sendByte_CPULED(b);
+  restore_interrupts(interruptStatus);
+  busy_wait_us(RESET_TIME); // Reset time after sending color
 }
 
 /**
@@ -2970,10 +3376,7 @@ void sendByte_CPULED(uint8_t byte) {
  * @param color 32-bit RGB color Value
  */
 void CPULED(uint32_t color) {
-    sendByte_CPULED((color & 0x00FF0000) >> 16);  // Send red byte
-    sendByte_CPULED((color & 0x0000FF00) >> 8);   // Send green byte
-    sendByte_CPULED((color & 0x000000FF));        // Send blue byte
-    busy_wait_us(RESET_TIME); // Reset time after sending color
+    sendRGB_CPULED((color & 0x00FF0000) >> 16, (color & 0x0000FF00) >> 8, (color & 0x000000FF));
 }
 
 /**
@@ -2981,10 +3384,7 @@ void CPULED(uint32_t color) {
  * @param color CRGB color object
  */
 void CPULED(CRGB color) {
-    sendByte_CPULED(color.r);  // Send red byte
-    sendByte_CPULED(color.g);  // Send green byte
-    sendByte_CPULED(color.b);  // Send blue byte
-    busy_wait_us(RESET_TIME); // Reset time after sending color
+    sendRGB_CPULED(color.r, color.g, color.b);
 }
 
 /**
@@ -2994,8 +3394,5 @@ void CPULED(CRGB color) {
  * @param b Blue component (0-255)
  */
 void CPULED(uint8_t r, uint8_t g, uint8_t b) {
-    sendByte_CPULED(r);  // Send red byte
-    sendByte_CPULED(g);  // Send green byte
-    sendByte_CPULED(b);  // Send blue byte
-    busy_wait_us(RESET_TIME); // Reset time after sending color
+    sendRGB_CPULED(r, g, b);
 }
