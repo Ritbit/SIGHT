@@ -22,6 +22,16 @@ Description : LED strip controller with animations, RGBW support, and comprehens
                 C4: command; documented Cm: instead
               - LedData gains a new ledMode field (CONFIG_IDENTIFIER bumped
                 -- this one's a real layout change, unlike v1.11's)
+              - New Cq:RGB/Cq:GRB command makes the CPU status LED's
+                onboard-chip color order (LedConfig.cpuLedColorOrder) runtime-configurable and
+                persisted, instead of requiring a recompile whenever a board's onboard chip
+                variance is found (CONFIG_WIRE_SIZE grew again, 113 -> 114 bytes)
+              - Post-release CodeRabbit audit: widened animate_Step[]/
+                boundAnimateStep() to uint16_t (a uint8_t element made "% modulus" a no-op
+                whenever modulus reached 256+, silently capping chase-pattern animation on wide
+                LED groups); added applyRuntimeConfig() and used it in the three whole-LedConfig
+                replacement paths (Li:CONFIG:, runtime L, Cd) so brightness/timing intervals
+                apply live there too, matching what the single-field C-commands already did
 
               v1.11 improvements:
               - Replaced raw-struct persistence (Se/Li:CONFIG:, flash save/
@@ -3582,7 +3592,6 @@ void StartupLoop() {
 
   // Green closing [->><<-]
   uint8_t DELAY = (LedConfig.numLedsPerChannel / 10);
-  CRGB color = 0x00FF00;
   for(int i = 0; i < LedConfig.numLedsPerChannel/2; i+=1) {
     for(int n = 0; n < LedConfig.numChannels; n++) {
       leds[n][i] = CRGB::Green;
