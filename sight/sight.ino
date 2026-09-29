@@ -1,9 +1,27 @@
 /*
 Name        : SIGHT (Shelf Indicators for Guided Handling Tasks)
-Version     : 1.11
-Date        : 2025-12-18
+Version     : 1.12
+Date        : 2026-09-29
 Author      : Bas van Ritbergen <bas.vanritbergen@adyen.com> / bas@ritbit.com
 Description : LED strip controller with animations, RGBW support, and comprehensive safety features.
+
+              v1.12 improvements:
+              - Replaced the compile-time USE_RGB_LEDS/USE_RGBW_LEDS toggle
+                (and the hand-rolled FastLED_RGBW.h CRGB-cast hack) with FastLED's own native RGBW support
+                (CLEDController::setRgbw()/clearWhiteChannel()); one firmware build now supports both, switchable
+                live at runtime with the new Cm:RGB/Cm:RGBW command -- no reboot, hardware-verified with the pulse analyzer
+              - RGBW now uses kRGBWExactColors (extracts the shared gray
+                component into the W channel and subtracts it from R/G/B), reducing current draw on
+                near-white/desaturated colors instead of always forcing W to 0
+              - Cl (LED count) also now applies live via
+                CLEDController::setLeds() instead of requiring a reboot; Cx (GPIO pin) still does --
+                that one is a hard constraint (the pin is a C++ template parameter baked in at registration)
+              - Li:CONFIG: imports only prompt for a reboot when the GPIO
+                pins actually changed now (LED count/mode changes from an import apply live, same as Cl/Cm)
+              - Fixed the V command's help text advertising a non-existent
+                C4: command; documented Cm: instead
+              - LedData gains a new ledMode field (CONFIG_IDENTIFIER bumped
+                -- this one's a real layout change, unlike v1.11's)
 
               v1.11 improvements:
               - Replaced raw-struct persistence (Se/Li:CONFIG:, flash save/
@@ -45,8 +63,8 @@ Description : LED strip controller with animations, RGBW support, and comprehens
 
 
 Notes       : When compiling make sure to reserve a little space for littleFS (8-64k)
-              Supports both RGB (WS2812B) and RGBW (WS2813B/SK6812) LED strips.
-              Switch between modes using USE_RGB_LEDS or USE_RGBW_LEDS define.
+              Supports both RGB (WS2812B) and RGBW (WS2813B/SK6812) LED strips
+              from a single build -- switch live with the 'Cm:RGB'/'Cm:RGBW' command (see applyLedMode()).
 
 Copyright (C) 2024,2025 Bas van Ritbergen
 
@@ -65,7 +83,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 */
 // Current firmware version
-#define VERSION "1.11"
+#define VERSION "1.12"
 
 // Maximum length for system identifier and system default name
 #define IDENTIFIER_MAX_LENGTH 16
@@ -77,12 +95,12 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 // meaning of an existing field changes, so an incompatible saved/imported
 // struct is detected and rejected instead of being silently misinterpreted.
 // NOT tied 1:1 to VERSION -- v1.11 kept this at "SIGHT-CFG1.10" because the
-// LedData layout is unchanged from v1.10 (v1.11 only changed persistence's
-// serialization *mechanism*, raw memcpy -> field-wise encode/decode, which
-// happens to produce byte-identical output for this struct; verified via
-// sizeof(LedData) == CONFIG_WIRE_SIZE == 112, no padding). Only bump this
-// when the actual layout changes, per the comment above.
-#define CONFIG_IDENTIFIER "SIGHT-CFG1.10"
+// LedData layout was unchanged from v1.10 (only persistence's serialization
+// *mechanism* changed, raw memcpy -> field-wise encode/decode, byte-
+// identical for that struct). v1.12 genuinely adds a field (ledMode), so
+// this bump is real this time. Only bump this when the actual layout
+// changes, per the comment above.
+#define CONFIG_IDENTIFIER "SIGHT-CFG1.12"
 
 // LED strip configuration (LED count limits and defaults)
 #define NUM_LEDS_PER_CHANNEL_DEFAULT 57
@@ -218,54 +236,21 @@ enum AnimationPattern {
 // so one can detect with a LED or Logic Analyser if all the GPIO ports still work.
 #define POWERON_GPIOTEST false
 
-// *** IMPORTANT: Set this to match your LED strip type ***
-// Uncomment ONE of these lines:
+// LED chipset/protocol. WS2812-protocol-compatible strips (including SK6812
+// RGBW strips, which are WS2812-protocol-compatible) all use this same
+// chipset/timing. RGBW is no longer a separate compile-time build (see
+// v1.12 changelog) -- FastLED's own driver supports RGBW natively at
+// runtime (CLEDController::setRgbw()/clearWhiteChannel(), checked fresh on
+// every show()), selected live via the 'Cm:' command / LedConfig.ledMode
+// instead of a #define here. See applyLedMode().
+#define LED_CHIPSET WS2812B
+#define LED_COLOR_ORDER GRB
 
-// For WS2812B RGB strips (3 bytes per LED)
-#define USE_RGB_LEDS
-
-// For WS2813B-RGBW, SK6812 RGBW strips (4 bytes per LED)
-//#define USE_RGBW_LEDS
-
-
-// Auto-configure based on strip type
-// Error if both LED types are defined
-#if defined(USE_RGB_LEDS) && defined(USE_RGBW_LEDS)
-  #error "ERROR: Both USE_RGB_LEDS and USE_RGBW_LEDS are defined! Uncomment only ONE."
-#endif
-
-// RGBW LED configuration (SK6812)
-#ifdef USE_RGBW_LEDS
-  // LED type identifier (4 bytes per LED)
-  #define LED_TYPE 4
-  // LED chipset model
-  #define LED_CHIPSET SK6812
-  // NOTE: this define is NOT actually honored on the wire in RGBW mode.
-  // FastLED.addLeds() below is called with a (CRGB*)-cast CRGBW buffer (see
-  // "RGBW mode: Cast CRGBW* to CRGB*..." further down), so FastLED applies
-  // its color-order swap to what it thinks are plain 3-byte CRGB structs,
-  // never seeing the real 4-byte CRGBW layout. The order actually
-  // transmitted is fixed by CRGBW's own field declaration order in
-  // FastLED_RGBW.h (g, r, b, w), independent of this define. Hardware-
-  // verified with the pulse analyzer (tools/ws2812_pulse_analyzer/):
-  // setting Cc:1:112233 (R=0x11 G=0x22 B=0x33) transmitted bytes
-  // 22 11 33 00 -- i.e. true wire order is G,R,B,W, not R,G,B,W. This
-  // happens to match common SK6812 RGBW wiring, but changing this define
-  // will NOT change the transmitted order; see CODE_REVIEW.md finding 10.
-  #define LED_COLOR_ORDER RGB
-  // Compilation message for RGBW LEDs
-  #pragma message "Compiling for RGBW LEDs (SK6812, 4 bytes/LED, true wire order G,R,B,W -- LED_COLOR_ORDER above is not honored, see comment)"
-// RGB LED configuration (WS2812B)
-#else
-  // LED type identifier (3 bytes per LED)
-  #define LED_TYPE 3
-  // LED chipset model
-  #define LED_CHIPSET WS2812B
-  // LED color byte order
-  #define LED_COLOR_ORDER GRB
-  // Compilation message for RGB LEDs
-  #pragma message "Compiling for RGB LEDs (WS2812B, 3 bytes/LED, GRB order)"
-#endif
+// Runtime-selectable strip mode (see LedData::ledMode, 'Cm:' command,
+// applyLedMode()). Persisted as a single byte, same convention as
+// CPULED_COLOR_ORDER above.
+#define LED_MODE_RGB 0
+#define LED_MODE_RGBW 1
 
 // Minimum and Maximum allowed GPIO pin number
 #define GPIO_PIN_MIN 2
@@ -294,12 +279,16 @@ enum AnimationPattern {
 // red (blue was correct either way, since blue's byte doesn't move
 // between RGB/GRB -- it's the 3rd byte in both). This is genuine
 // board/batch hardware variance in the onboard chip, not a firmware bug.
-// If you swap in a different physical board, re-verify the colors
-// (blue in SYSTEM_STARTUP, green in SYSTEM_NORMAL, red in SYSTEM_ERROR)
-// and change this define if needed -- don't assume every board with the
-// same model name has the same onboard chip order.
-#define CPULED_COLOR_ORDER_RGB 0
-#define CPULED_COLOR_ORDER_GRB 1
+// CPULED_COLOR_ORDER below is only the *default* (used by resetToDefaults()
+// and as the fallback validateConfig() corrects to) -- since this is also
+// now runtime-settable (LedConfig.cpuLedColorOrder, 'Cq:RGB'/'Cq:GRB'), a
+// board with different onboard-chip variance no longer needs a recompile,
+// just a one-time 'Cq:'+'S'. Re-verify the colors (blue in SYSTEM_STARTUP,
+// green in SYSTEM_NORMAL, red in SYSTEM_ERROR) after swapping in a
+// different physical board -- don't assume every board with the same
+// model name has the same onboard chip order.
+#define CPULED_COLOR_ORDER_RGB 1
+#define CPULED_COLOR_ORDER_GRB 0
 #define CPULED_COLOR_ORDER CPULED_COLOR_ORDER_RGB
 
 // Configuration file path in LittleFS
@@ -329,7 +318,7 @@ enum AnimationPattern {
 #include <SHA256.h>             // SHA256 library for creating configfile checksum
 #include "LittleFS.h"           // FileSystem library for storing config
 #include <FastLED.h>            // Core LED control library (RGB/RGBW)
-#include "FastLED_RGBW.h"       // Add RGBW support for FastLED  
+#include "rgbw.h"               // RgbwDefault()/RGBW_MODE -- native RGBW support (see applyLedMode())  
 #include "hardware/watchdog.h"  // Core watchdog timer
 #include "hardware/sync.h"      // save_and_disable_interrupts/restore_interrupts for CPU LED bit-banging
 #include <MicrocontrollerID.h>  // Figure MCU type/serial
@@ -359,18 +348,11 @@ enum AnimationPattern {
 // To fix: Arduino IDE -> Tools -> Flash Size -> Select option with 'FS'
 //         Example: "2MB (Sketch: 1984KB, FS: 64KB)"
 
-// Declare LedStrip control arrays
-#if LED_TYPE == 4
-  // RGBW strips: Use CRGBW arrays (4 bytes per LED)
-  CRGBW leds[NUM_CHANNELS_DEFAULT+1][NUM_LEDS_PER_CHANNEL_MAX];
-  #define ZERO_W(led) led.w = 0  // Zero out W channel for RGBW mode
-  using LedPixel = CRGBW;
-#else
-  // RGB strips: Use CRGB arrays (3 bytes per LED)
-  CRGB leds[NUM_CHANNELS_DEFAULT+1][NUM_LEDS_PER_CHANNEL_MAX];
-  #define ZERO_W(led)  // Do nothing for RGB mode (no W channel)
-  using LedPixel = CRGB;
-#endif
+// Declare LedStrip control arrays. Always plain CRGB (3 bytes/pixel) --
+// RGBW transmission (when LedConfig.ledMode == LED_MODE_RGBW) is handled by
+// FastLED's own driver at show() time, not by a wider pixel struct here.
+CRGB leds[NUM_CHANNELS_DEFAULT+1][NUM_LEDS_PER_CHANNEL_MAX];
+using LedPixel = CRGB;
 
 char mcuId[41];
 
@@ -378,12 +360,12 @@ char mcuId[41];
 // export/import LedData (see encodeConfig()/decodeConfig() further down).
 // Computed from field widths, not sizeof(LedData), so it never depends on
 // this compiler's struct layout/padding/CRGB representation.
-#define CONFIG_WIRE_SIZE (16 + IDENTIFIER_MAX_LENGTH + 2 + 1 + 1 + 1 + 1 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 1 + \
+#define CONFIG_WIRE_SIZE (16 + IDENTIFIER_MAX_LENGTH + 2 + 1 + 1 + 1 + 1 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 1 + 1 + 1 + \
                            NUM_CHANNELS_MAX + 12 + (10 * 3) + NUM_CHANNELS_MAX)
 // Tripwire: if IDENTIFIER_MAX_LENGTH or NUM_CHANNELS_MAX ever change, this
 // forces a review of encodeConfig()/decodeConfig() (which hardcode field
 // counts/widths) instead of silently drifting out of sync with the macro.
-#if CONFIG_WIRE_SIZE != 112
+#if CONFIG_WIRE_SIZE != 114
   #error "CONFIG_WIRE_SIZE changed -- review encodeConfig()/decodeConfig() field-by-field before updating this check"
 #endif
 
@@ -410,6 +392,16 @@ struct LedData {
   uint16_t                  fading2StepOut = FADING_2STEP_OUT;
   bool                    startupAnimation = STARTUP_ANIMATION;
   bool                           localEcho = LOCAL_ECHO;
+  // RGB or RGBW strip mode (LED_MODE_RGB/LED_MODE_RGBW). Applied live via
+  // applyLedMode() -- FastLED's driver honors this on the very next frame,
+  // no reboot needed. See the 'Cm:' command.
+  uint8_t                          ledMode = LED_MODE_RGB;
+  // CPU status LED's onboard chip byte order (CPULED_COLOR_ORDER_RGB/
+  // _GRB) -- was a compile-time-only #define; now also runtime-settable
+  // via 'Cq:RGB'/'Cq:GRB' so a different physical board's onboard chip
+  // variance (see AGENTS.md) doesn't require a recompile. Defaults to
+  // the board's compile-time CPULED_COLOR_ORDER.
+  uint8_t                  cpuLedColorOrder = CPULED_COLOR_ORDER;
   uint8_t channelGPIOpin[NUM_CHANNELS_MAX] = {2,3,4,5,6,7,8,9};
   uint8_t                state_pattern[12] = {0,0,0,0,0,1,1,1,1,0};
   CRGB                     state_color[10] = {CRGB::Black, COLOR_STATE_1, COLOR_STATE_2, COLOR_STATE_3, COLOR_STATE_4, COLOR_STATE_1, COLOR_STATE_2, COLOR_STATE_3, COLOR_STATE_4, CRGB::White};
@@ -637,90 +629,49 @@ void setup() {
     }
   }
 
-  // Calculate buffer size for FastLED
-  int MAX_LEDS;
-  #if LED_TYPE == 4
-    // RGBW: We use CRGBW arrays (4 bytes per LED) for proper alignment
-    // FastLED thinks they're RGB (3 bytes), so we tell it about more "RGB LEDs"
-    // to cover all 4 bytes per physical LED (W channel always set to 0)
-    MAX_LEDS = (LedConfig.numLedsPerChannel * 4 + 2) / 3;  // +2 for rounding up
-  #else
-    // RGB: Standard 3 bytes per LED, 1:1 mapping
-    MAX_LEDS = LedConfig.numLedsPerChannel;
-  #endif
+  // Buffer size for FastLED: always a direct 1:1 pixel mapping now -- RGBW
+  // no longer needs a wider "fake RGB count" (see applyLedMode()).
+  int MAX_LEDS = LedConfig.numLedsPerChannel;
 
   for (uint8_t CHANNEL=0; CHANNEL<NUM_CHANNELS_DEFAULT ; CHANNEL++) {
     pinMode(LedConfig.channelGPIOpin[CHANNEL], OUTPUT);
     if (LedConfig.channelGPIOpin[CHANNEL] != CPULED_GPIO) {
-      #if LED_TYPE == 4
-        // RGBW mode: Cast CRGBW* to CRGB* to trick FastLED into sending 4 bytes per LED
-        switch (LedConfig.channelGPIOpin[CHANNEL]) {
-          case  0: FastLED.addLeds<LED_CHIPSET,  0, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case  1: FastLED.addLeds<LED_CHIPSET,  1, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case  2: FastLED.addLeds<LED_CHIPSET,  2, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case  3: FastLED.addLeds<LED_CHIPSET,  3, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case  4: FastLED.addLeds<LED_CHIPSET,  4, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case  5: FastLED.addLeds<LED_CHIPSET,  5, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case  6: FastLED.addLeds<LED_CHIPSET,  6, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case  7: FastLED.addLeds<LED_CHIPSET,  7, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case  8: FastLED.addLeds<LED_CHIPSET,  8, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case  9: FastLED.addLeds<LED_CHIPSET,  9, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 10: FastLED.addLeds<LED_CHIPSET, 10, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 11: FastLED.addLeds<LED_CHIPSET, 11, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 12: FastLED.addLeds<LED_CHIPSET, 12, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 13: FastLED.addLeds<LED_CHIPSET, 13, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 14: FastLED.addLeds<LED_CHIPSET, 14, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 15: FastLED.addLeds<LED_CHIPSET, 15, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 17: FastLED.addLeds<LED_CHIPSET, 17, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 18: FastLED.addLeds<LED_CHIPSET, 18, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 19: FastLED.addLeds<LED_CHIPSET, 19, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 20: FastLED.addLeds<LED_CHIPSET, 20, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 21: FastLED.addLeds<LED_CHIPSET, 21, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 22: FastLED.addLeds<LED_CHIPSET, 22, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 23: FastLED.addLeds<LED_CHIPSET, 23, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 24: FastLED.addLeds<LED_CHIPSET, 24, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 25: FastLED.addLeds<LED_CHIPSET, 25, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 26: FastLED.addLeds<LED_CHIPSET, 26, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 27: FastLED.addLeds<LED_CHIPSET, 27, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 28: FastLED.addLeds<LED_CHIPSET, 28, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-          case 29: FastLED.addLeds<LED_CHIPSET, 29, LED_COLOR_ORDER>((CRGB*)leds[CHANNEL], MAX_LEDS); break;
-        }
-      #else
-        // RGB mode: Use leds directly (already CRGB*), no cast needed
-        switch (LedConfig.channelGPIOpin[CHANNEL]) {
-          case  0: FastLED.addLeds<LED_CHIPSET,  0, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case  1: FastLED.addLeds<LED_CHIPSET,  1, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case  2: FastLED.addLeds<LED_CHIPSET,  2, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case  3: FastLED.addLeds<LED_CHIPSET,  3, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case  4: FastLED.addLeds<LED_CHIPSET,  4, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case  5: FastLED.addLeds<LED_CHIPSET,  5, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case  6: FastLED.addLeds<LED_CHIPSET,  6, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case  7: FastLED.addLeds<LED_CHIPSET,  7, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case  8: FastLED.addLeds<LED_CHIPSET,  8, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case  9: FastLED.addLeds<LED_CHIPSET,  9, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 10: FastLED.addLeds<LED_CHIPSET, 10, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 11: FastLED.addLeds<LED_CHIPSET, 11, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 12: FastLED.addLeds<LED_CHIPSET, 12, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 13: FastLED.addLeds<LED_CHIPSET, 13, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 14: FastLED.addLeds<LED_CHIPSET, 14, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 15: FastLED.addLeds<LED_CHIPSET, 15, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 17: FastLED.addLeds<LED_CHIPSET, 17, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 18: FastLED.addLeds<LED_CHIPSET, 18, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 19: FastLED.addLeds<LED_CHIPSET, 19, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 20: FastLED.addLeds<LED_CHIPSET, 20, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 21: FastLED.addLeds<LED_CHIPSET, 21, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 22: FastLED.addLeds<LED_CHIPSET, 22, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 23: FastLED.addLeds<LED_CHIPSET, 23, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 24: FastLED.addLeds<LED_CHIPSET, 24, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 25: FastLED.addLeds<LED_CHIPSET, 25, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 26: FastLED.addLeds<LED_CHIPSET, 26, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 27: FastLED.addLeds<LED_CHIPSET, 27, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 28: FastLED.addLeds<LED_CHIPSET, 28, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-          case 29: FastLED.addLeds<LED_CHIPSET, 29, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
-        }
-      #endif
+      switch (LedConfig.channelGPIOpin[CHANNEL]) {
+        case  0: FastLED.addLeds<LED_CHIPSET,  0, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case  1: FastLED.addLeds<LED_CHIPSET,  1, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case  2: FastLED.addLeds<LED_CHIPSET,  2, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case  3: FastLED.addLeds<LED_CHIPSET,  3, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case  4: FastLED.addLeds<LED_CHIPSET,  4, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case  5: FastLED.addLeds<LED_CHIPSET,  5, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case  6: FastLED.addLeds<LED_CHIPSET,  6, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case  7: FastLED.addLeds<LED_CHIPSET,  7, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case  8: FastLED.addLeds<LED_CHIPSET,  8, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case  9: FastLED.addLeds<LED_CHIPSET,  9, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 10: FastLED.addLeds<LED_CHIPSET, 10, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 11: FastLED.addLeds<LED_CHIPSET, 11, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 12: FastLED.addLeds<LED_CHIPSET, 12, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 13: FastLED.addLeds<LED_CHIPSET, 13, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 14: FastLED.addLeds<LED_CHIPSET, 14, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 15: FastLED.addLeds<LED_CHIPSET, 15, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 17: FastLED.addLeds<LED_CHIPSET, 17, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 18: FastLED.addLeds<LED_CHIPSET, 18, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 19: FastLED.addLeds<LED_CHIPSET, 19, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 20: FastLED.addLeds<LED_CHIPSET, 20, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 21: FastLED.addLeds<LED_CHIPSET, 21, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 22: FastLED.addLeds<LED_CHIPSET, 22, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 23: FastLED.addLeds<LED_CHIPSET, 23, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 24: FastLED.addLeds<LED_CHIPSET, 24, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 25: FastLED.addLeds<LED_CHIPSET, 25, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 26: FastLED.addLeds<LED_CHIPSET, 26, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 27: FastLED.addLeds<LED_CHIPSET, 27, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 28: FastLED.addLeds<LED_CHIPSET, 28, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+        case 29: FastLED.addLeds<LED_CHIPSET, 29, LED_COLOR_ORDER>(leds[CHANNEL], MAX_LEDS); break;
+      }
     }
   }
+
+  // Apply the persisted RGB/RGBW mode to the controllers just registered.
+  applyLedMode();
 
   Serial.println("Initialization done..,");
 
@@ -1185,16 +1136,14 @@ void checkInput(char input[MAX_INPUT_LEN]) {
         Serial.println(VERSION);
         Serial.print("Build Date       : ");
         Serial.println(__DATE__ " " __TIME__);
-        Serial.print("LED Type       : ");
-        #ifdef USE_RGBW_LEDS
-          Serial.println("RGBW (4 bytes/LED)");
-          Serial.println("Chipset          : SK6812");
-          Serial.println("Color Order      : GRBW (fixed, not LED_COLOR_ORDER-configurable -- see CONTEXT.md)");
-        #else
-          Serial.println("RGB (3 bytes/LED)");
-          Serial.println("Chipset          : WS2812B");
-          Serial.println("Color Order      : GRB");
-        #endif
+        Serial.print("LED Mode         : ");
+        if (LedConfig.ledMode == LED_MODE_RGBW) {
+          Serial.println("RGBW (native FastLED RGBW support, W derived from RGB)");
+        } else {
+          Serial.println("RGB");
+        }
+        Serial.println("Chipset          : WS2812B / SK6812 (WS2812-protocol)");
+        Serial.println("Color Order      : GRB");
         Serial.print("MCU ID           : ");
         Serial.println(mcuId);
         Serial.println("=================================");
@@ -1282,19 +1231,21 @@ void checkInput(char input[MAX_INPUT_LEN]) {
                     Serial.println("WARNING: Imported configuration contained out-of-range values; corrected to safe defaults.");
                   }
 
-                  // FastLED controllers are registered once at boot with the
-                  // running numLedsPerChannel/channelGPIOpin[]; if the import
-                  // changed either, treat it the same as Cl/Cx and ask
-                  // before saving/rebooting instead of only the generic
-                  // save-or-reboot reminder below.
-                  bool rebootNeeded = (temp.numLedsPerChannel != LedConfig.numLedsPerChannel) ||
-                      (memcmp(temp.channelGPIOpin, LedConfig.channelGPIOpin, sizeof(temp.channelGPIOpin)) != 0);
+                  // A GPIO pin is a template parameter baked into its
+                  // controller at addLeds() time, so a channelGPIOpin[]
+                  // change from import still needs the same Cx-style
+                  // reboot confirmation. numLedsPerChannel and ledMode are
+                  // both live-appliable (applyLedCount()/applyLedMode()),
+                  // same as Cl/Cm, so they no longer need one.
+                  bool rebootNeeded = memcmp(temp.channelGPIOpin, LedConfig.channelGPIOpin, sizeof(temp.channelGPIOpin)) != 0;
 
                   LedConfig = temp;
+                  applyLedCount();
+                  applyLedMode();
 
                   Serial.println("Configuration imported successfully!");
                   if (rebootNeeded) {
-                    Serial.println("NOTE: LED count and/or GPIO pin assignments changed; FastLED controllers are fixed at boot.");
+                    Serial.println("NOTE: GPIO pin assignments changed; FastLED controllers are fixed at boot.");
                     promptSaveAndReboot();
                   } else {
                     Serial.println("Use 'S' to save to flash, or 'R' to reboot and discard.");
@@ -1730,6 +1681,53 @@ void rebootMCU() {
 }
 
 /**
+ * Apply LedConfig.ledMode (LED_MODE_RGB/LED_MODE_RGBW) to every registered
+ * strip channel controller. FastLED's RP2040 PIO clockless driver checks
+ * getRgbw().active() fresh on every show() call, so this takes effect on
+ * the very next frame -- no reboot needed, unlike Cx (GPIO pin, a template
+ * parameter baked into the controller at addLeds() time) or historically Cl.
+ * Only the main strip channels are ever registered via FastLED.addLeds()
+ * (the CPU status LED is a separate hand-bit-banged path), so every
+ * controller in FastLED.count() is a strip channel -- none need skipping.
+ */
+void applyLedMode() {
+  for (int i = 0; i < FastLED.count(); i++) {
+    if (LedConfig.ledMode == LED_MODE_RGBW) {
+      FastLED[i].setRgbw(RgbwDefault());  // kRGBWExactColors: extracts the
+                                           // gray component into W, saving
+                                           // current, without changing
+                                           // perceived color.
+    } else {
+      FastLED[i].clearWhiteChannel();
+    }
+  }
+}
+
+/**
+ * Apply LedConfig.numLedsPerChannel to every registered strip channel
+ * controller via CLEDController::setLeds() -- re-slices the same
+ * pre-allocated leds[][] buffer (sized NUM_LEDS_PER_CHANNEL_MAX) to the new
+ * active pixel count. Takes effect on the very next show(), no reboot
+ * needed (unlike Cx, where the GPIO pin is a template parameter baked into
+ * the controller at addLeds() time).
+ * Mirrors setup()'s registration loop/skip condition exactly, so
+ * controller index i and channel buffer leds[CHANNEL] stay correctly
+ * paired (only channels other than the CPU status LED's pin are ever
+ * registered with FastLED.addLeds()).
+ */
+void applyLedCount() {
+  int controllerIndex = 0;
+  for (uint8_t CHANNEL = 0; CHANNEL < NUM_CHANNELS_DEFAULT; CHANNEL++) {
+    if (LedConfig.channelGPIOpin[CHANNEL] != CPULED_GPIO) {
+      if (controllerIndex < FastLED.count()) {
+        FastLED[controllerIndex].setLeds(leds[CHANNEL], LedConfig.numLedsPerChannel);
+      }
+      controllerIndex++;
+    }
+  }
+}
+
+/**
  * Display help information for all available Commands
  * Shows comprehensive Command reference with usage examples
  */
@@ -1767,7 +1765,7 @@ void showHelp() {
   Serial.print  (NUM_LEDS_PER_CHANNEL_MIN);
   Serial.print  ("-");
   Serial.print  (NUM_LEDS_PER_CHANNEL_MAX);
-  Serial.println(") [reboot required to fully take effect]");
+  Serial.println(")");
   Serial.print  ("  Ct:<Value>                    Set amount of groups per channel (1-");
   Serial.print  (NUM_GROUPS_PER_CHANNEL_MAX);
   Serial.println(")");
@@ -1802,13 +1800,14 @@ void showHelp() {
   Serial.print  (PATTERN_MAX);
   Serial.println(") [for colorblind assist]");
   Serial.println("  Cz:<order>                    Set channel order (N=standard 12345678, or custom like 43215678)");
-  Serial.println("  C4:<yes/true/no/false>        Set RGBW leds (4bytes) instead of RGB (3bytes) (False/True)");
+  Serial.println("  Cm:<RGB/RGBW>                 Set LED strip mode (RGBW extracts gray component into W to save current)");
   Serial.print  ("  Cx:<channel>:<gpio-pin>       Set GPIO pin (");
   Serial.print  (GPIO_PIN_MIN);
   Serial.print  ("-");
   Serial.print  (GPIO_PIN_MAX);
-  Serial.println(") per channel (1-8)");
+  Serial.println(") per channel (1-8) [reboot required to fully take effect]");
   Serial.println("  Ce:<Y/N>                      Enable/disable local echo (character echo while typing)");
+  Serial.println("  Cq:<RGB/GRB>                  Set CPU status LED color order (onboard chip variance between boards)");
   Serial.println("  Cd                            Reset all settings to factory defaults");
   Serial.println();
   Serial.println();
@@ -1833,14 +1832,7 @@ void updateGroups() {
  * @param amount Fade intensity (0=no fade, higher=faster fade)
  */
 inline void fadeLedPixel(LedPixel &pixel, uint8_t amount) {
-#if LED_TYPE == 4
-  CRGB rgb(pixel.r, pixel.g, pixel.b);
-  rgb.fadeToBlackBy(amount);
-  pixel = rgb;
-#else
   pixel.fadeToBlackBy(amount);
-#endif
-  ZERO_W(pixel);
 }
 
 /**
@@ -1879,7 +1871,6 @@ inline void rampPixelToward(LedPixel &pixel, const CRGB &target, uint8_t percent
   stepChannel(pixel.r, target.r);
   stepChannel(pixel.g, target.g);
   stepChannel(pixel.b, target.b);
-  ZERO_W(pixel);
 }
 
 /**
@@ -1892,14 +1883,12 @@ inline void applyTwoStepPixel(LedPixel &pixel, bool turnOn, const CRGB &color) {
   if (turnOn) {
     if (LedConfig.fading2StepIn == 0) {
       pixel = color;
-      ZERO_W(pixel);
     } else {
       rampPixelToward(pixel, color, LedConfig.fading2StepIn);
     }
   } else {
     if (LedConfig.fading2StepOut == 0) {
       pixel = CRGB::Black;
-      ZERO_W(pixel);
     } else {
       rampPixelToward(pixel, CRGB::Black, LedConfig.fading2StepOut);
     }
@@ -1949,7 +1938,6 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
   if (pattern < 8 && LedConfig.fading2StepOut == 0) {
     for(int i = 0; i < fullGroupWidth; i++) {
       leds[channelIndex][startLEDIndex + i] = CRGB::Black;
-      ZERO_W(leds[channelIndex][startLEDIndex + i]);
     }
   }
 
@@ -2052,10 +2040,8 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
                 //                     [       #]
               for(int i = 0; i < groupWidth; i++) {
                 leds[channelIndex][startLEDIndex + i].fadeLightBy(LedConfig.fadingAnimation);
-                ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
               leds[channelIndex][startLEDIndex + step ] = LedConfig.state_color[state];
-              ZERO_W(leds[channelIndex][startLEDIndex + step]);
               break;
               // if ( i/(groupWidth/2) == 0 )
               //   leds[channelIndex][startLEDIndex+i] = LedConfig.state_color[state];;
@@ -2074,10 +2060,8 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
               //                     [#       ]
               for(int i = 0; i < groupWidth; i++) {
                 leds[channelIndex][startLEDIndex + i].fadeLightBy(LedConfig.fadingAnimation);
-                ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
               leds[channelIndex][startLEDIndex + groupWidth - step - 1] = LedConfig.state_color[state];
-              ZERO_W(leds[channelIndex][startLEDIndex + groupWidth - step - 1]);
               break;
               }
 
@@ -2100,15 +2084,12 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
               //                     [#       ]
               for(int i = 0; i < groupWidth; i++) {
                 leds[channelIndex][startLEDIndex + i].fadeLightBy(LedConfig.fadingAnimation);
-                ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
 
               if (step < groupWidth ) {
                 leds[channelIndex][startLEDIndex + step] = LedConfig.state_color[state];
-                ZERO_W(leds[channelIndex][startLEDIndex + step]);
               } else {
                 leds[channelIndex][startLEDIndex + (groupWidth - (step - groupWidth)) - 1] = LedConfig.state_color[state];
-                ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth - (step - groupWidth)) - 1]);
               }
               break;
               }
@@ -2121,12 +2102,9 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
               //                     [   ##   ]
               for(int i = 0; i < groupWidth; i++) {
                 leds[channelIndex][startLEDIndex + i].fadeLightBy(LedConfig.fadingAnimation);
-                ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
               leds[channelIndex][startLEDIndex + step] = LedConfig.state_color[state];
               leds[channelIndex][startLEDIndex+groupWidth - step -1] = LedConfig.state_color[state];
-              ZERO_W(leds[channelIndex][startLEDIndex + step]);
-              ZERO_W(leds[channelIndex][startLEDIndex+groupWidth - step -1]);
               break;
               }
 
@@ -2139,12 +2117,9 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
               //                     [#      #]
               for(int i = 0; i < groupWidth; i++) {
                 leds[channelIndex][startLEDIndex + i].fadeLightBy(LedConfig.fadingAnimation);
-                ZERO_W(leds[channelIndex][startLEDIndex + i]);
               }
               leds[channelIndex][startLEDIndex + (groupWidth/2) - step - 1] = LedConfig.state_color[state];
               leds[channelIndex][startLEDIndex + (groupWidth/2) + step] = LedConfig.state_color[state];
-              ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth/2) - step - 1]);
-              ZERO_W(leds[channelIndex][startLEDIndex + (groupWidth/2) + step]);
               break;
               }
 
@@ -2165,7 +2140,6 @@ void setAllLEDs(CRGB color) {
   for(int n = 0; n < LedConfig.numChannels; n++) {
     for(int i = 0; i < LedConfig.numLedsPerChannel; i++) {
       leds[n][i] = color;
-      ZERO_W(leds[n][i]);
     }
   }
   FastLED.show();
@@ -2366,8 +2340,7 @@ void setConfigParameters(char *Data) {
             LedConfig.numLedsPerChannel = ValueInt;
             Serial.println(LedConfig.numLedsPerChannel);
             FastLED.clearData();
-            Serial.println("NOTE: FastLED controller lengths are fixed at boot.");
-            promptSaveAndReboot();
+            applyLedCount();
           }
         } else {
           Serial.print("Invalid number of leds per channel(");
@@ -2709,12 +2682,44 @@ void setConfigParameters(char *Data) {
         setLedStripGPIO(Value);
         FastLED.clearData();
         break;
+      // Set RGB/RGBW strip mode
+      case 'm':
+        if (strcmp(Value, "RGB") == 0 || strcmp(Value, "rgb") == 0) {
+          LedConfig.ledMode = LED_MODE_RGB;
+          applyLedMode();
+          Serial.println("LED mode             : RGB");
+        } else if (strcmp(Value, "RGBW") == 0 || strcmp(Value, "rgbw") == 0) {
+          LedConfig.ledMode = LED_MODE_RGBW;
+          applyLedMode();
+          Serial.println("LED mode             : RGBW");
+        } else {
+          Serial.println("Invalid LED mode, use 'RGB' or 'RGBW'");
+          errorCount++;
+        }
+        break;
+      // Set CPU status LED color order (onboard chip byte order varies by
+      // physical board/batch -- see AGENTS.md). Takes effect on the very
+      // next CPU LED update, no reboot needed.
+      case 'q':
+        if (strcmp(Value, "RGB") == 0 || strcmp(Value, "rgb") == 0) {
+          LedConfig.cpuLedColorOrder = CPULED_COLOR_ORDER_RGB;
+          Serial.println("CPU LED color order  : RGB");
+        } else if (strcmp(Value, "GRB") == 0 || strcmp(Value, "grb") == 0) {
+          LedConfig.cpuLedColorOrder = CPULED_COLOR_ORDER_GRB;
+          Serial.println("CPU LED color order  : GRB");
+        } else {
+          Serial.println("Invalid CPU LED color order, use 'RGB' or 'GRB'");
+          errorCount++;
+        }
+        break;
       // set defaults
       case 'd':
         resetToDefaults();
         Serial.println("Configuration reset to defaults");
         Serial.println();
         FastLED.clearData();
+        applyLedCount();
+        applyLedMode();
         break;
       default:
         Serial.print("SYNTAX ERROR: Configuration item '");
@@ -2905,6 +2910,8 @@ void resetToDefaults() {
   LedConfig.fading2StepOut = FADING_2STEP_OUT;
   LedConfig.startupAnimation = STARTUP_ANIMATION;
   LedConfig.localEcho = LOCAL_ECHO;
+  LedConfig.ledMode = LED_MODE_RGB;
+  LedConfig.cpuLedColorOrder = CPULED_COLOR_ORDER;
   LedConfig.channelOrder[0] = 1; LedConfig.channelOrder[1] = 2; LedConfig.channelOrder[2] = 3; LedConfig.channelOrder[3] = 4;
   LedConfig.channelOrder[4] = 5; LedConfig.channelOrder[5] = 6; LedConfig.channelOrder[6] = 7; LedConfig.channelOrder[7] = 8;
   LedConfig.state_pattern[0] = 0; // Fixed since this is black.
@@ -2986,7 +2993,11 @@ void showConfiguration() {
   }
   Serial.println();
 
-  Serial.println("LED Mode             : RGB-only (W channel = 0)");
+  Serial.print("LED Mode             : ");
+  Serial.println(LedConfig.ledMode == LED_MODE_RGBW ? "RGBW" : "RGB");
+
+  Serial.print("CPU LED color order  : ");
+  Serial.println(LedConfig.cpuLedColorOrder == CPULED_COLOR_ORDER_GRB ? "GRB" : "RGB");
 
   Serial.print("Overall brightness   : ");
   Serial.println(LedConfig.brightness);
@@ -3160,6 +3171,16 @@ bool validateConfig(LedData &cfg) {
     needsCorrection = true;
   }
 
+  if (cfg.ledMode != LED_MODE_RGB && cfg.ledMode != LED_MODE_RGBW) {
+    cfg.ledMode = LED_MODE_RGB;
+    needsCorrection = true;
+  }
+
+  if (cfg.cpuLedColorOrder != CPULED_COLOR_ORDER_RGB && cfg.cpuLedColorOrder != CPULED_COLOR_ORDER_GRB) {
+    cfg.cpuLedColorOrder = CPULED_COLOR_ORDER;
+    needsCorrection = true;
+  }
+
   // Combined geometry: a complete group must fit inside the configured strip
   // with positive width; otherwise rendering divides by zero or writes
   // out of bounds. Reset the geometry fields as a set when inconsistent.
@@ -3321,6 +3342,8 @@ size_t encodeConfig(const LedData &cfg, uint8_t *buf) {
   wireWriteU16(buf, pos, cfg.fading2StepOut);
   wireWriteU8(buf, pos, cfg.startupAnimation ? 1 : 0);
   wireWriteU8(buf, pos, cfg.localEcho ? 1 : 0);
+  wireWriteU8(buf, pos, cfg.ledMode);
+  wireWriteU8(buf, pos, cfg.cpuLedColorOrder);
   for (uint8_t i = 0; i < NUM_CHANNELS_MAX; i++) wireWriteU8(buf, pos, cfg.channelGPIOpin[i]);
   for (uint8_t i = 0; i < 12; i++) wireWriteU8(buf, pos, cfg.state_pattern[i]);
   for (uint8_t i = 0; i < 10; i++) {
@@ -3360,6 +3383,8 @@ bool decodeConfig(const uint8_t *buf, size_t len, LedData &cfg) {
   cfg.fading2StepOut = wireReadU16(buf, pos);
   cfg.startupAnimation = wireReadU8(buf, pos) != 0;
   cfg.localEcho = wireReadU8(buf, pos) != 0;
+  cfg.ledMode = wireReadU8(buf, pos);
+  cfg.cpuLedColorOrder = wireReadU8(buf, pos);
   for (uint8_t i = 0; i < NUM_CHANNELS_MAX; i++) cfg.channelGPIOpin[i] = wireReadU8(buf, pos);
   for (uint8_t i = 0; i < 12; i++) cfg.state_pattern[i] = wireReadU8(buf, pos);
   for (uint8_t i = 0; i < 10; i++) {
@@ -3426,6 +3451,11 @@ bool loadConfiguration() {
 
       bool needsCorrection = validateConfig(temp);
       LedConfig = temp;
+      // No-op at boot (called before FastLED.addLeds() registration, so
+      // FastLED.count() == 0 yet); live-applies numLedsPerChannel/ledMode
+      // when this runs from the runtime 'L' command instead.
+      applyLedCount();
+      applyLedMode();
 
       Serial.println("Checksum matches, configuration loaded.");
       if (needsCorrection) {
@@ -3508,7 +3538,6 @@ void FadeAll(int StartLed, int EndLed, float fadeFactor) {
       leds[n][i].r=leds[n][i].r/fadeFactor;
       leds[n][i].g=leds[n][i].g/fadeFactor;
       leds[n][i].b=leds[n][i].b/fadeFactor;
-      ZERO_W(leds[n][i]);
     }
 }
 
@@ -3527,8 +3556,6 @@ void StartupLoop() {
     for(int n = 0; n < LedConfig.numChannels; n++) {
       leds[n][i] = CRGB::Green;
       leds[n][LedConfig.numLedsPerChannel -i -1] = CRGB::Green;
-      ZERO_W(leds[n][i]);
-      ZERO_W(leds[n][LedConfig.numLedsPerChannel -i -1]);
     }
     FastLED.show();
     FadeAll(0,LedConfig.numLedsPerChannel,1.4);
@@ -3665,15 +3692,15 @@ void sendByte_CPULED(uint8_t byte) {
  */
 void sendRGB_CPULED(uint8_t r, uint8_t g, uint8_t b) {
   uint32_t interruptStatus = save_and_disable_interrupts();
-#if CPULED_COLOR_ORDER == CPULED_COLOR_ORDER_GRB
-  sendByte_CPULED(g);
-  sendByte_CPULED(r);
-  sendByte_CPULED(b);
-#else
-  sendByte_CPULED(r);
-  sendByte_CPULED(g);
-  sendByte_CPULED(b);
-#endif
+  if (LedConfig.cpuLedColorOrder == CPULED_COLOR_ORDER_GRB) {
+    sendByte_CPULED(g);
+    sendByte_CPULED(r);
+    sendByte_CPULED(b);
+  } else {
+    sendByte_CPULED(r);
+    sendByte_CPULED(g);
+    sendByte_CPULED(b);
+  }
   restore_interrupts(interruptStatus);
   busy_wait_us(RESET_TIME); // Reset time after sending color
 }
