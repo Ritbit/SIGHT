@@ -112,7 +112,7 @@ Checksum matches, configuration loaded.
 Initialization done..,
 System ready - Status LED: Green glow
 Identifier           : SIGHT v1.12
-LEDs per channel     : 57
+LEDs per channel     : 60
 Groups per channel   : 6
 Amount of channels   : 8
 Spacer width         : 1
