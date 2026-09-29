@@ -1,25 +1,26 @@
 # S.I.G.H.T
-**S**helf **I**ndicators for **G**uided **H**andling **T**asks 
+
+**S**helf **I**ndicators for **G**uided **H**andling **T**asks
 
 ![SIGHT Installation](images/castlewall.jpg?raw=true "SIGHT instalation")
 
-# What is S.I.G.H.T.
+## What is S.I.G.H.T
 
-S.I.G.H.T. is an 8-Channel LED Strip Controller designed for use in warehouse order picking or as shelf position indicators. 
+S.I.G.H.T. is an 8-Channel LED Strip Controller designed for use in warehouse order picking or as shelf position indicators.
 By connecting to your system via USB, it identifies as a serial port, allowing for straightforward interaction and control.
 The main setup is based on an RP2040 microcontroller from Waveshare, but it will work fine on any RP2040 MCU.
 For the indicators, common WS28xx LED strips can be used, including both RGB (WS2812B) and RGBW (WS2813B/SK6812) variants.
 
-
 ## RP2040 Zero
+
 ![RP2040 Zero](images/RP2040-Zero.png?raw=true "RP2040 Zero")
 
 The model used in my PCB is this one: [https://www.waveshare.com/wiki/RP2040-Zero](https://www.waveshare.com/wiki/RP2040-Zero)
 But it works just s fine on the much cheaper clones from AliExpress: [https://nl.aliexpress.com/w/wholesale-RP2040%2525252dZero.html](https://nl.aliexpress.com/w/wholesale-RP2040%2525252dZero.html)
 
-
 ## LED Strips
-It can drive all WS28xx based LED strips, supporting both RGB (WS2812B) and RGBW (WS2813B/SK6812) variants. 
+
+It can drive all WS28xx based LED strips, supporting both RGB (WS2812B) and RGBW (WS2813B/SK6812) variants.
 Due to the redundant data lines, I recommend the 5V based WS-2813 or the 12V based WS-2815 for longer lengths (over 1.5m).
 For 12V strips you have to change the capacitor on the driver board for a 16V model. (A replacement schematics+PCB suitable for both will be added soon).
 
@@ -33,13 +34,13 @@ Send `S` afterward to persist the choice across reboots.
 
 For more details about LED strips see [user-guide-for-ws2812b-ws2811-sk6812-and-ws2815](https://www.superlightingled.com/blog/a-user-guide-for-ws2812b-ws2811-sk6812-and-ws2815/)
 
-
 ## PCB's
+
 There are ready for use PCB's in the PCB folder, you can import them into [EasyEDA](https://easyeda.com/) and from there send in the order to [JLCPCB](https://jlcpcb.com/) to get the ready for use PCBs.
 
-
 ## Compile
-The source code for the firmware can be compiled using the user-friendly [Arduino IDE](https://www.arduino.cc/en/software). 
+
+The source code for the firmware can be compiled using the user-friendly [Arduino IDE](https://www.arduino.cc/en/software).
 To add support for the Waveshare RP2040 Zero, please follow the instructions here [https://www.waveshare.com/wiki/RP2040-Zero](https://www.waveshare.com/wiki/RP2040-Zero) to add the [Waveshare RP2040-repository](https://www.waveshare.com/wiki/RP2040-Zero) to the Arduino IDE.
 And then install support for this board:
  - Raspberry Pi Pico / RP2040
@@ -53,12 +54,11 @@ Please make sure to install the libraries for:
 
 **Important:** When compiling, make sure to reserve a little space for LittleFS (8-64KB) in the Arduino IDE board settings to enable configuration storage.
 
-
 ## Quick Start
 
 Get your SIGHT controller running in just 4 simple steps:
 
-1. **Connect Hardware** 
+1. **Connect Hardware**
    - Plug SIGHT into your USB port
    - Connect LED strips to the configured GPIO pins
    - Power on the system
@@ -87,10 +87,8 @@ Get your SIGHT controller running in just 4 simple steps:
 > S              # Save configuration
 ```
 
+## Usage
 
-
-
-## Usage: 
 Upon connection, the controller performs a startup sequence while the CPU status LED softly pulses blue and each channel performs a GPIO pin test. The watchdog only arms after USB serial is opened, preventing unwanted resets while waiting for a host. Once the serial port is opened, the LED switches to a breathing green "normal" glow, a welcome animation plays on all LED strips, and configuration settings load from flash if available. Any error state forces the CPU LED to blink red for quick diagnostics.
 
 The startup sequence output will look as follows:
@@ -146,12 +144,12 @@ Enter 'H' for help
 >
 ```
 
-
 After the initialization, a command prompt (>) will appear, indicating that the controller is ready to accept commands. Below is a list of available commands:
 
 ## Command Reference
 
 ### System Commands
+
 ```
 V             - Show version information
 H or ?        - Show help
@@ -166,6 +164,7 @@ W             - Shows welcome/startup loop
 ```
 
 ### Group Control Commands
+
 ```
 Tnn:s         - Set group nn to state s (0-9)
 M:ssssss      - Set multiple groups at once by providing a list of states (e.g. M:12345)
@@ -175,6 +174,7 @@ X             - Clear all groups (set to state 0)
 ```
 
 ### Configuration Commands (C prefix)
+
 ```
 Cn:name       - Set controller name/identifier (max 16 chars)
 Cl:n          - Set LEDs per channel (6-600)
@@ -284,7 +284,6 @@ Version 1.9.1 includes bug fixes and improvements:
 
 Version 1.9 builds upon the solid foundation of v1.8 with additional enhancements:
 
-
 - **Enhanced LED capacity**: Support for up to 600 LEDs per channel and 100 groups per channel
 - **Dual fading system**: Separate fading factors for regular and 2-step animations
 - **Improved terminology**: Changed "shelf/strip/output" to "channel" for better clarity
@@ -326,7 +325,7 @@ Version 1.8 included significant improvements:
 
 **LED Strips Not Working**
 - **Problem**: No LEDs light up when sending commands
-- **Solutions**: 
+- **Solutions**:
   - Check GPIO pin configuration with `D` command
   - Verify LED strip mode matches your strip with `D` (`Cm:RGB`/`Cm:RGBW` to change, no reboot needed)
   - Ensure power supply is adequate (5V/12V depending on strip type)
@@ -386,6 +385,7 @@ If you encounter issues not covered here:
 ## Application Examples
 
 ### Example 1: Warehouse Order Picking
+
 **Setup**: 4 zones, 8 groups each, 57 LEDs per group
 ```
 Cs:8                    # 8 channels/zones
@@ -403,6 +403,7 @@ Cw:1                    # 1 LED spacer between groups
 ```
 
 ### Example 2: Assembly Line Progress
+
 **Setup**: 6 stations, progress indicators
 ```
 Cs:6                    # 6 stations
@@ -419,6 +420,7 @@ Cp:2:10                 # Set state 2 to chase pattern
 ```
 
 ### Example 3: Storage Facility Status
+
 **Setup**: 12 aisles, status lighting
 ```
 Cs:8                    # 8 channels (multiple aisles per channel)
@@ -435,6 +437,7 @@ Cc:3:FF0000             # Red for full
 ```
 
 ### Example 4: Multi-Stage Process Control
+
 **Setup**: 5 process stages with animations
 ```
 Cs:5                    # 5 stages
@@ -455,6 +458,7 @@ Cb:500                  # 500ms blink interval
 ```
 
 ### Example 5: KPI Dashboard Display
+
 **Setup**: Visual performance indicators
 ```
 Cs:8                    # 8 KPI categories
