@@ -103,7 +103,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #define CONFIG_IDENTIFIER "SIGHT-CFG1.12"
 
 // LED strip configuration (LED count limits and defaults)
-#define NUM_LEDS_PER_CHANNEL_DEFAULT 57
+#define NUM_LEDS_PER_CHANNEL_DEFAULT 60
 #define NUM_LEDS_PER_CHANNEL_MIN 6
 #define NUM_LEDS_PER_CHANNEL_MAX 600
 
@@ -273,20 +273,16 @@ enum AnimationPattern {
 // directly (it is a separate, hand-written path from the main strips'
 // FastLED/LED_COLOR_ORDER) and sends whichever order is selected here --
 // there is no auto-detection. The real deployed SIGHT unit is verified
-// (visually and with tools/ws2812_pulse_analyzer/) to want RGB order. Two
+// (visually and with a logic analyzer) to want RGB order. Two
 // other physical boards nominally the same model ("Waveshare RP2040
 // Zero") were found to actually want GRB instead: green displayed as
 // red (blue was correct either way, since blue's byte doesn't move
 // between RGB/GRB -- it's the 3rd byte in both). This is genuine
 // board/batch hardware variance in the onboard chip, not a firmware bug.
-// CPULED_COLOR_ORDER below is only the *default* (used by resetToDefaults()
-// and as the fallback validateConfig() corrects to) -- since this is also
-// now runtime-settable (LedConfig.cpuLedColorOrder, 'Cq:RGB'/'Cq:GRB'), a
-// board with different onboard-chip variance no longer needs a recompile,
-// just a one-time 'Cq:'+'S'. Re-verify the colors (blue in SYSTEM_STARTUP,
-// green in SYSTEM_NORMAL, red in SYSTEM_ERROR) after swapping in a
-// different physical board -- don't assume every board with the same
-// model name has the same onboard chip order.
+// If you swap in a different physical board, re-verify the colors
+// (blue in SYSTEM_STARTUP, green in SYSTEM_NORMAL, red in SYSTEM_ERROR)
+// and change this define if needed -- don't assume every board with the
+// same model name has the same onboard chip order.
 #define CPULED_COLOR_ORDER_RGB 1
 #define CPULED_COLOR_ORDER_GRB 0
 #define CPULED_COLOR_ORDER CPULED_COLOR_ORDER_RGB
@@ -483,7 +479,12 @@ Ticker animate_Timer;
 // periodically bounds each element with a modulo via boundAnimateStep(),
 // which wraps the read-modify-write in a short critical section so an
 // increment landing between the read and the write can't be lost/torn.
-uint8_t animate_Step[16]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+// uint16_t (not uint8_t): modulus in boundAnimateStep() can legitimately
+// exceed 256 (e.g. pattern 10 uses groupWidth*2, and groupWidth can be up
+// to ~598 for a 600-LED/1-group channel) -- a uint8_t element would make
+// "% modulus" a no-op whenever modulus >= 256, permanently capping the
+// animation step at 255 and breaking patterns 8/9/10/12 on wide groups.
+uint16_t animate_Step[16]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 
 /**
  * Bound an animate_Step[] element to [0, modulus) atomically with respect to
@@ -496,10 +497,10 @@ uint8_t animate_Step[16]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
  * @param modulus Exclusive upper bound (must be >= 1)
  * @return The bounded value of animate_Step[pattern]
  */
-inline uint8_t boundAnimateStep(uint8_t pattern, uint16_t modulus) {
+inline uint16_t boundAnimateStep(uint8_t pattern, uint16_t modulus) {
   uint32_t interruptStatus = save_and_disable_interrupts();
   animate_Step[pattern] = animate_Step[pattern] % modulus;
-  uint8_t bounded = animate_Step[pattern];
+  uint16_t bounded = animate_Step[pattern];
   restore_interrupts(interruptStatus);
   return bounded;
 }
@@ -736,7 +737,7 @@ void setBlinkState() {
  */
 void animateStep() {
   // just count up here, the clipping happens in the UpdateLED function as the length varies on the effect and group-size.
-  for (int i = 0; i < sizeof(animate_Step); i++) {
+  for (size_t i = 0; i < sizeof(animate_Step) / sizeof(animate_Step[0]); i++) {
     animate_Step[i]++;
   }
   return;
@@ -1240,8 +1241,7 @@ void checkInput(char input[MAX_INPUT_LEN]) {
                   bool rebootNeeded = memcmp(temp.channelGPIOpin, LedConfig.channelGPIOpin, sizeof(temp.channelGPIOpin)) != 0;
 
                   LedConfig = temp;
-                  applyLedCount();
-                  applyLedMode();
+                  applyRuntimeConfig();
 
                   Serial.println("Configuration imported successfully!");
                   if (rebootNeeded) {
@@ -1727,6 +1727,38 @@ void applyLedCount() {
   }
 }
 
+/** 
+ * Apply every runtime-affecting piece of LedConfig after a *whole-struct*
+ * replacement (Li:CONFIG: import, the runtime 'L' reload, and 'Cd' reset).
+ * Single-field setters (Cb:/Ca:/Cu:/Ci:) already detach/reattach their own
+ * Ticker or call FastLED.setBrightness() live the moment that one field
+ * changes; a bulk LedConfig replacement previously only called
+ * applyLedCount()/applyLedMode(), silently leaving the strip running at
+ * the OLD brightness/blink/update/animate timing until a reboot, even
+ * though 'D' immediately shows the NEW values.
+ * Skips the brightness/timer part when called before setup() has
+ * registered any FastLED controllers yet (FastLED.count() == 0) -- at
+ * boot (loadConfiguration() runs before controller registration), setup()
+ * applies brightness and starts the timers itself, once, right after
+ * registration; doing it again here would just start them prematurely.
+ */
+void applyRuntimeConfig() {
+  FastLED.clearData();
+  applyLedCount();
+  applyLedMode();
+  if (FastLED.count() > 0) {
+    FastLED.setBrightness(LedConfig.brightness);
+    update_Timer.detach();
+    update_Timer.attach_ms(LedConfig.updateinterval, &writeChannelData);
+    setgroup_Timer.detach();
+    setgroup_Timer.attach_ms(LedConfig.updateinterval * 2, &setGroupState);
+    blink_Timer.detach();
+    blink_Timer.attach_ms(LedConfig.blinkinterval, &setBlinkState);
+    animate_Timer.detach();
+    animate_Timer.attach_ms(LedConfig.animateinterval, &animateStep);
+  }
+}
+
 /**
  * Display help information for all available Commands
  * Shows comprehensive Command reference with usage examples
@@ -2029,7 +2061,7 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
               break;
 
       case 8: {
-              uint8_t step = boundAnimateStep(pattern, groupWidth);
+              uint16_t step = boundAnimateStep(pattern, groupWidth);
                 // 5 Animate >         [#       ]
                 //                     [ #      ]
                 //                     [  #     ]
@@ -2049,7 +2081,7 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
               }
 
       case 9: {
-              uint8_t step = boundAnimateStep(pattern, groupWidth);
+              uint16_t step = boundAnimateStep(pattern, groupWidth);
               // 6 Animate <         [       #]
               //                     [      # ]
               //                     [     #  ]
@@ -2066,7 +2098,7 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
               }
 
       case 10: {
-              uint8_t step = boundAnimateStep(pattern, groupWidth*2);
+              uint16_t step = boundAnimateStep(pattern, groupWidth*2);
               // 7 Cyon/Kitt         [#       ]
               //                     [ #      ]
               //                     [  #     ]
@@ -2095,7 +2127,7 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
               }
 
       case 11: {
-              uint8_t step = boundAnimateStep(pattern, groupWidth/2);
+              uint16_t step = boundAnimateStep(pattern, groupWidth/2);
               // 8 Animate ><        [#      #]
               //                     [ #    # ]
               //                     [  #  #  ]
@@ -2109,7 +2141,7 @@ void setLEDGroup(uint16_t group, uint8_t state, uint8_t Pct) {
               }
 
       case 12: {
-              uint8_t step = boundAnimateStep(pattern, groupWidth/2);
+              uint16_t step = boundAnimateStep(pattern, groupWidth/2);
 
               // 9 Animate ><        [   ##   ]
               //                     [  #  #  ]
@@ -2717,9 +2749,7 @@ void setConfigParameters(char *Data) {
         resetToDefaults();
         Serial.println("Configuration reset to defaults");
         Serial.println();
-        FastLED.clearData();
-        applyLedCount();
-        applyLedMode();
+        applyRuntimeConfig();
         break;
       default:
         Serial.print("SYNTAX ERROR: Configuration item '");
@@ -3451,11 +3481,12 @@ bool loadConfiguration() {
 
       bool needsCorrection = validateConfig(temp);
       LedConfig = temp;
-      // No-op at boot (called before FastLED.addLeds() registration, so
-      // FastLED.count() == 0 yet); live-applies numLedsPerChannel/ledMode
-      // when this runs from the runtime 'L' command instead.
-      applyLedCount();
-      applyLedMode();
+      // At boot, this runs before FastLED.addLeds() registration, so
+      // applyRuntimeConfig()'s FastLED.count() == 0 guard skips the
+      // brightness/timer part (setup() handles those itself right after
+      // registration); from the runtime 'L' command, everything applies
+      // live immediately.
+      applyRuntimeConfig();
 
       Serial.println("Checksum matches, configuration loaded.");
       if (needsCorrection) {

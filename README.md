@@ -272,7 +272,7 @@ All settings for name, timing, colors and patterns can be saved to flash, and wi
 
 - **Configuration persistence rewritten** to a stable, explicit format for saving/loading/backup-restore, independent of compiler/platform details -- more robust against future firmware updates
 - **`Cl`/`Cx` now ask before rebooting**: "Save configuration and reboot now to apply this change? (Y/N)" instead of silently requiring you to remember to reboot yourself
-- CPU status LED timing and RGBW wire color order hardware-verified with a purpose-built logic analyzer tool (see `tools/` folder)
+- CPU status LED timing and RGBW wire color order hardware-verified with a logic analyzer tool
 - Fixed a CPU status LED color glitch and documented that the onboard status LED chip's color order can vary board-to-board (separate from your main LED strips)
 
 ## Version 1.10 Features
@@ -405,12 +405,12 @@ If you encounter issues not covered here:
 
 ### Example 1: Warehouse Order Picking
 
-**Setup**: 4 zones, 8 groups each, 57 LEDs per group
+**Setup**: 8 zones (channels), 8 groups each, 60 LEDs per channel (`Cl` sets LEDs per *channel*, not per group)
 
 ```text
 Cs:8                    # 8 channels/zones
 Ct:8                    # 8 groups per zone
-Cl:57                   # 57 LEDs per group
+Cl:60                   # 60 LEDs per channel, split across the 8 groups
 Cw:1                    # 1 LED spacer between groups
 ```
 
@@ -431,7 +431,7 @@ Cw:1                    # 1 LED spacer between groups
 ```text
 Cs:6                    # 6 stations
 Ct:4                    # 4 groups per station
-Cl:30                   # 30 LEDs per group
+Cl:30                   # 30 LEDs per channel (per station), split across the 4 groups
 Cp:2:10                 # Set state 2 to chase pattern
 ```
 
@@ -450,8 +450,8 @@ Cp:2:10                 # Set state 2 to chase pattern
 
 ```text
 Cs:8                    # 8 channels (multiple aisles per channel)
-Ct:12                   # 12 groups (aisles)
-Cl:20                   # 20 LEDs per aisle
+Ct:12                   # 12 groups (aisles) per channel
+Cl:240                  # 240 LEDs per channel = 20 LEDs per aisle (Cl is per-channel; 240/12 groups = 20 each)
 Cc:1:00FF00             # Green for available
 Cc:2:FFA500             # Orange for partial
 Cc:3:FF0000             # Red for full
@@ -471,7 +471,7 @@ Cc:3:FF0000             # Red for full
 ```text
 Cs:5                    # 5 stages
 Ct:6                    # 6 indicators per stage
-Cl:25                   # 25 LEDs per indicator
+Cl:25                   # 25 LEDs per channel (per stage), split across the 6 indicators
 Cp:1:8                  # State 1: chase up
 Cp:2:10                 # State 2: chase up/down
 Cp:3:1                  # State 3: blinking
@@ -495,7 +495,7 @@ Cb:500                  # 500ms blink interval
 ```text
 Cs:8                    # 8 KPI categories
 Ct:4                    # 4 performance levels per KPI
-Cl:40                   # 40 LEDs for visual impact
+Cl:40                   # 40 LEDs per channel (per KPI), split across the 4 levels
 Cf:24                   # Smooth fading
 Ca:200                 # 200ms animation speed
 ```
