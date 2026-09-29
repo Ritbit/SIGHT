@@ -25,6 +25,7 @@ Due to the redundant data lines, I recommend the 5V based WS-2813 or the 12V bas
 For 12V strips you have to change the capacitor on the driver board for a 16V model. (A replacement schematics+PCB suitable for both will be added soon).
 
 **As of v1.12**, RGB and RGBW are both supported by the same firmware build -- no need to recompile for your strip type. Switch live over serial with the `Cm:` command:
+
 - `Cm:RGB` for WS2812B (3 bytes per LED)
 - `Cm:RGBW` for WS2813B-RGBW, SK6812 (4 bytes per LED) -- extracts the shared gray component into the white channel to save current, instead of driving R+G+B for white-ish colors
 
@@ -43,14 +44,16 @@ There are ready for use PCB's in the PCB folder, you can import them into [EasyE
 The source code for the firmware can be compiled using the user-friendly [Arduino IDE](https://www.arduino.cc/en/software).
 To add support for the Waveshare RP2040 Zero, please follow the instructions here [https://www.waveshare.com/wiki/RP2040-Zero](https://www.waveshare.com/wiki/RP2040-Zero) to add the [Waveshare RP2040-repository](https://www.waveshare.com/wiki/RP2040-Zero) to the Arduino IDE.
 And then install support for this board:
- - Raspberry Pi Pico / RP2040
+
+- Raspberry Pi Pico / RP2040
 
 Please make sure to install the libraries for:
- - FastLED (3.10.5+ recommended; RGBW support is now handled natively by FastLED itself, see below)
- - LittleFS
- - Crypto
- - Ticker
- - MicroControllerID
+
+- FastLED (3.10.5+ recommended; RGBW support is now handled natively by FastLED itself, see below)
+- LittleFS
+- Crypto
+- Ticker
+- MicroControllerID
 
 **Important:** When compiling, make sure to reserve a little space for LittleFS (8-64KB) in the Arduino IDE board settings to enable configuration storage.
 
@@ -79,6 +82,7 @@ Get your SIGHT controller running in just 4 simple steps:
    - Configuration will auto-load on next boot
 
 **Example First Session:**
+
 ```
 > H              # Show help
 > T1:1           # Set group 1 to green (state 1)
@@ -200,35 +204,44 @@ Cd            - Reset to default configuration
 ## Command Examples
 
 **Set a status for a group:**
+
 - Set group 1 to status 1: `T1:1`
 
 **Set status for multiple groups:**
+
 - Send status for the first 8 groups: `M:14262435`
 
 **Set group with progress percentage:**
+
 - Set group 5 to state 2 with 75% progress: `P05:2:075`
 
 **Reset all groups:**
+
 - Clear all: `X`
 
 **Check status:**
+
 - System info (uptime, RAM, group states): `I`
 
 **Configuration backup/restore:**
+
 - Export config: `Se`
 - Import config: `Li:CONFIG:<hex_string>`
 
 There are 10 different statuses that can be used, but status 0 is hardcoded to 'off' (all LEDs off), the statuses 1-9 can be freely configured with RGB color and blinking/animations.
 
 **Set color for a state:**
+
 - Set state 2 to orange: `Cc:2:FF6000`
 
 **Set pattern/animation for a state:**
+
 - Set state 2 to chase up/down: `Cp:2:10`
 
 ## Animation Patterns
 
 The hardcoded animations are:
+
 ```
  0.  Solid on                     [########]
  1.  Blinking                     [########]   [        ]
@@ -324,6 +337,7 @@ Version 1.8 included significant improvements:
 ### Common Issues and Solutions
 
 **LED Strips Not Working**
+
 - **Problem**: No LEDs light up when sending commands
 - **Solutions**:
   - Check GPIO pin configuration with `D` command
@@ -332,6 +346,7 @@ Version 1.8 included significant improvements:
   - Check data line connections and polarity
 
 **Configuration Not Saving**
+
 - **Problem**: Settings lost after power cycle
 - **Solutions**:
   - Ensure LittleFS space is reserved (8-64KB) in Arduino IDE
@@ -340,6 +355,7 @@ Version 1.8 included significant improvements:
   - Use `Se` to export backup before making changes
 
 **LED Strips Flickering or Random Colors**
+
 - **Problem**: LEDs show incorrect colors or flicker
 - **Solutions**:
   - Check power supply capacity (under-voltage causes issues)
@@ -348,6 +364,7 @@ Version 1.8 included significant improvements:
   - Check for electromagnetic interference
 
 **Serial Communication Issues**
+
 - **Problem**: No response to commands
 - **Solutions**:
   - Verify baud rate is 115200
@@ -356,6 +373,7 @@ Version 1.8 included significant improvements:
   - Try `R` command to reboot controller
 
 **Memory or Performance Issues**
+
 - **Problem**: Slow response or crashes
 - **Solutions**:
   - Check system info with `I` command for memory usage
@@ -376,6 +394,7 @@ Version 1.8 included significant improvements:
 ### Getting Help
 
 If you encounter issues not covered here:
+
 1. Use `H` command for built-in help
 2. Use `I` command to check system status
 3. Export configuration with `Se` for analysis
@@ -387,13 +406,16 @@ If you encounter issues not covered here:
 ### Example 1: Warehouse Order Picking
 
 **Setup**: 4 zones, 8 groups each, 57 LEDs per group
+
 ```
 Cs:8                    # 8 channels/zones
 Ct:8                    # 8 groups per zone
 Cl:57                   # 57 LEDs per group
 Cw:1                    # 1 LED spacer between groups
 ```
+
 **Command Sequence**:
+
 ```
 > T1:1                  # Zone 1 - Item ready (green)
 > T2:2                  # Zone 2 - In progress (orange)
@@ -405,13 +427,16 @@ Cw:1                    # 1 LED spacer between groups
 ### Example 2: Assembly Line Progress
 
 **Setup**: 6 stations, progress indicators
+
 ```
 Cs:6                    # 6 stations
 Ct:4                    # 4 groups per station
 Cl:30                   # 30 LEDs per group
 Cp:2:10                 # Set state 2 to chase pattern
 ```
+
 **Command Sequence**:
+
 ```
 > P01:1:025             # Station 1, state 1, 25% complete
 > P02:1:050             # Station 2, state 1, 50% complete
@@ -422,6 +447,7 @@ Cp:2:10                 # Set state 2 to chase pattern
 ### Example 3: Storage Facility Status
 
 **Setup**: 12 aisles, status lighting
+
 ```
 Cs:8                    # 8 channels (multiple aisles per channel)
 Ct:12                   # 12 groups (aisles)
@@ -430,7 +456,9 @@ Cc:1:00FF00             # Green for available
 Cc:2:FFA500             # Orange for partial
 Cc:3:FF0000             # Red for full
 ```
+
 **Command Sequence**:
+
 ```
 > M:132131213121        # Set aisle status pattern
 > I                     # System info and group status
@@ -439,6 +467,7 @@ Cc:3:FF0000             # Red for full
 ### Example 4: Multi-Stage Process Control
 
 **Setup**: 5 process stages with animations
+
 ```
 Cs:5                    # 5 stages
 Ct:6                    # 6 indicators per stage
@@ -448,7 +477,9 @@ Cp:2:10                 # State 2: chase up/down
 Cp:3:1                  # State 3: blinking
 Cb:500                  # 500ms blink interval
 ```
+
 **Command Sequence**:
+
 ```
 > A:0                   # Clear all stages
 > T1:1                  # Start stage 1
@@ -460,6 +491,7 @@ Cb:500                  # 500ms blink interval
 ### Example 5: KPI Dashboard Display
 
 **Setup**: Visual performance indicators
+
 ```
 Cs:8                    # 8 KPI categories
 Ct:4                    # 4 performance levels per KPI
@@ -467,14 +499,18 @@ Cl:40                   # 40 LEDs for visual impact
 Cf:24                   # Smooth fading
 Ca:200                 # 200ms animation speed
 ```
+
 **Color Mapping**:
+
 ```
 > Cc:1:00FF00           # Excellent - Green
 > Cc:2:FFFF00           # Good - Yellow
 > Cc:3:FFA500           # Warning - Orange
 > Cc:4:FF0000           # Critical - Red
 ```
+
 **Real-time Updates**:
+
 ```
 > T1:1                  # KPI 1: Excellent
 > T2:2                  # KPI 2: Good
@@ -485,12 +521,14 @@ Ca:200                 # 200ms animation speed
 ### Configuration Backup Examples
 
 **Export Current Setup**:
+
 ```
 > Se                    # Export configuration as hex
 OUTPUT: 53494748542D434... (copy this string)
 ```
 
 **Import Saved Setup**:
+
 ```
 > Li:CONFIG:53494748542D434...  # Paste the hex string
 Configuration imported successfully
