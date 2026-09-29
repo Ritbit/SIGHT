@@ -279,12 +279,16 @@ enum AnimationPattern {
 // red (blue was correct either way, since blue's byte doesn't move
 // between RGB/GRB -- it's the 3rd byte in both). This is genuine
 // board/batch hardware variance in the onboard chip, not a firmware bug.
-// If you swap in a different physical board, re-verify the colors
-// (blue in SYSTEM_STARTUP, green in SYSTEM_NORMAL, red in SYSTEM_ERROR)
-// and change this define if needed -- don't assume every board with the
-// same model name has the same onboard chip order.
-#define CPULED_COLOR_ORDER_RGB 0
-#define CPULED_COLOR_ORDER_GRB 1
+// CPULED_COLOR_ORDER below is only the *default* (used by resetToDefaults()
+// and as the fallback validateConfig() corrects to) -- since this is also
+// now runtime-settable (LedConfig.cpuLedColorOrder, 'Cq:RGB'/'Cq:GRB'), a
+// board with different onboard-chip variance no longer needs a recompile,
+// just a one-time 'Cq:'+'S'. Re-verify the colors (blue in SYSTEM_STARTUP,
+// green in SYSTEM_NORMAL, red in SYSTEM_ERROR) after swapping in a
+// different physical board -- don't assume every board with the same
+// model name has the same onboard chip order.
+#define CPULED_COLOR_ORDER_RGB 1
+#define CPULED_COLOR_ORDER_GRB 0
 #define CPULED_COLOR_ORDER CPULED_COLOR_ORDER_RGB
 
 // Configuration file path in LittleFS
@@ -356,12 +360,12 @@ char mcuId[41];
 // export/import LedData (see encodeConfig()/decodeConfig() further down).
 // Computed from field widths, not sizeof(LedData), so it never depends on
 // this compiler's struct layout/padding/CRGB representation.
-#define CONFIG_WIRE_SIZE (16 + IDENTIFIER_MAX_LENGTH + 2 + 1 + 1 + 1 + 1 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 1 + 1 + \
+#define CONFIG_WIRE_SIZE (16 + IDENTIFIER_MAX_LENGTH + 2 + 1 + 1 + 1 + 1 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 1 + 1 + 1 + \
                            NUM_CHANNELS_MAX + 12 + (10 * 3) + NUM_CHANNELS_MAX)
 // Tripwire: if IDENTIFIER_MAX_LENGTH or NUM_CHANNELS_MAX ever change, this
 // forces a review of encodeConfig()/decodeConfig() (which hardcode field
 // counts/widths) instead of silently drifting out of sync with the macro.
-#if CONFIG_WIRE_SIZE != 113
+#if CONFIG_WIRE_SIZE != 114
   #error "CONFIG_WIRE_SIZE changed -- review encodeConfig()/decodeConfig() field-by-field before updating this check"
 #endif
 
@@ -392,6 +396,12 @@ struct LedData {
   // applyLedMode() -- FastLED's driver honors this on the very next frame,
   // no reboot needed. See the 'Cm:' command.
   uint8_t                          ledMode = LED_MODE_RGB;
+  // CPU status LED's onboard chip byte order (CPULED_COLOR_ORDER_RGB/
+  // _GRB) -- was a compile-time-only #define; now also runtime-settable
+  // via 'Cq:RGB'/'Cq:GRB' so a different physical board's onboard chip
+  // variance (see AGENTS.md) doesn't require a recompile. Defaults to
+  // the board's compile-time CPULED_COLOR_ORDER.
+  uint8_t                  cpuLedColorOrder = CPULED_COLOR_ORDER;
   uint8_t channelGPIOpin[NUM_CHANNELS_MAX] = {2,3,4,5,6,7,8,9};
   uint8_t                state_pattern[12] = {0,0,0,0,0,1,1,1,1,0};
   CRGB                     state_color[10] = {CRGB::Black, COLOR_STATE_1, COLOR_STATE_2, COLOR_STATE_3, COLOR_STATE_4, COLOR_STATE_1, COLOR_STATE_2, COLOR_STATE_3, COLOR_STATE_4, CRGB::White};
@@ -1797,6 +1807,7 @@ void showHelp() {
   Serial.print  (GPIO_PIN_MAX);
   Serial.println(") per channel (1-8) [reboot required to fully take effect]");
   Serial.println("  Ce:<Y/N>                      Enable/disable local echo (character echo while typing)");
+  Serial.println("  Cq:<RGB/GRB>                  Set CPU status LED color order (onboard chip variance between boards)");
   Serial.println("  Cd                            Reset all settings to factory defaults");
   Serial.println();
   Serial.println();
@@ -2686,6 +2697,21 @@ void setConfigParameters(char *Data) {
           errorCount++;
         }
         break;
+      // Set CPU status LED color order (onboard chip byte order varies by
+      // physical board/batch -- see AGENTS.md). Takes effect on the very
+      // next CPU LED update, no reboot needed.
+      case 'q':
+        if (strcmp(Value, "RGB") == 0 || strcmp(Value, "rgb") == 0) {
+          LedConfig.cpuLedColorOrder = CPULED_COLOR_ORDER_RGB;
+          Serial.println("CPU LED color order  : RGB");
+        } else if (strcmp(Value, "GRB") == 0 || strcmp(Value, "grb") == 0) {
+          LedConfig.cpuLedColorOrder = CPULED_COLOR_ORDER_GRB;
+          Serial.println("CPU LED color order  : GRB");
+        } else {
+          Serial.println("Invalid CPU LED color order, use 'RGB' or 'GRB'");
+          errorCount++;
+        }
+        break;
       // set defaults
       case 'd':
         resetToDefaults();
@@ -2885,6 +2911,7 @@ void resetToDefaults() {
   LedConfig.startupAnimation = STARTUP_ANIMATION;
   LedConfig.localEcho = LOCAL_ECHO;
   LedConfig.ledMode = LED_MODE_RGB;
+  LedConfig.cpuLedColorOrder = CPULED_COLOR_ORDER;
   LedConfig.channelOrder[0] = 1; LedConfig.channelOrder[1] = 2; LedConfig.channelOrder[2] = 3; LedConfig.channelOrder[3] = 4;
   LedConfig.channelOrder[4] = 5; LedConfig.channelOrder[5] = 6; LedConfig.channelOrder[6] = 7; LedConfig.channelOrder[7] = 8;
   LedConfig.state_pattern[0] = 0; // Fixed since this is black.
@@ -2968,6 +2995,9 @@ void showConfiguration() {
 
   Serial.print("LED Mode             : ");
   Serial.println(LedConfig.ledMode == LED_MODE_RGBW ? "RGBW" : "RGB");
+
+  Serial.print("CPU LED color order  : ");
+  Serial.println(LedConfig.cpuLedColorOrder == CPULED_COLOR_ORDER_GRB ? "GRB" : "RGB");
 
   Serial.print("Overall brightness   : ");
   Serial.println(LedConfig.brightness);
@@ -3146,6 +3176,11 @@ bool validateConfig(LedData &cfg) {
     needsCorrection = true;
   }
 
+  if (cfg.cpuLedColorOrder != CPULED_COLOR_ORDER_RGB && cfg.cpuLedColorOrder != CPULED_COLOR_ORDER_GRB) {
+    cfg.cpuLedColorOrder = CPULED_COLOR_ORDER;
+    needsCorrection = true;
+  }
+
   // Combined geometry: a complete group must fit inside the configured strip
   // with positive width; otherwise rendering divides by zero or writes
   // out of bounds. Reset the geometry fields as a set when inconsistent.
@@ -3308,6 +3343,7 @@ size_t encodeConfig(const LedData &cfg, uint8_t *buf) {
   wireWriteU8(buf, pos, cfg.startupAnimation ? 1 : 0);
   wireWriteU8(buf, pos, cfg.localEcho ? 1 : 0);
   wireWriteU8(buf, pos, cfg.ledMode);
+  wireWriteU8(buf, pos, cfg.cpuLedColorOrder);
   for (uint8_t i = 0; i < NUM_CHANNELS_MAX; i++) wireWriteU8(buf, pos, cfg.channelGPIOpin[i]);
   for (uint8_t i = 0; i < 12; i++) wireWriteU8(buf, pos, cfg.state_pattern[i]);
   for (uint8_t i = 0; i < 10; i++) {
@@ -3348,6 +3384,7 @@ bool decodeConfig(const uint8_t *buf, size_t len, LedData &cfg) {
   cfg.startupAnimation = wireReadU8(buf, pos) != 0;
   cfg.localEcho = wireReadU8(buf, pos) != 0;
   cfg.ledMode = wireReadU8(buf, pos);
+  cfg.cpuLedColorOrder = wireReadU8(buf, pos);
   for (uint8_t i = 0; i < NUM_CHANNELS_MAX; i++) cfg.channelGPIOpin[i] = wireReadU8(buf, pos);
   for (uint8_t i = 0; i < 12; i++) cfg.state_pattern[i] = wireReadU8(buf, pos);
   for (uint8_t i = 0; i < 10; i++) {
@@ -3655,15 +3692,15 @@ void sendByte_CPULED(uint8_t byte) {
  */
 void sendRGB_CPULED(uint8_t r, uint8_t g, uint8_t b) {
   uint32_t interruptStatus = save_and_disable_interrupts();
-#if CPULED_COLOR_ORDER == CPULED_COLOR_ORDER_GRB
-  sendByte_CPULED(g);
-  sendByte_CPULED(r);
-  sendByte_CPULED(b);
-#else
-  sendByte_CPULED(r);
-  sendByte_CPULED(g);
-  sendByte_CPULED(b);
-#endif
+  if (LedConfig.cpuLedColorOrder == CPULED_COLOR_ORDER_GRB) {
+    sendByte_CPULED(g);
+    sendByte_CPULED(r);
+    sendByte_CPULED(b);
+  } else {
+    sendByte_CPULED(r);
+    sendByte_CPULED(g);
+    sendByte_CPULED(b);
+  }
   restore_interrupts(interruptStatus);
   busy_wait_us(RESET_TIME); // Reset time after sending color
 }
