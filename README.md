@@ -23,9 +23,11 @@ It can drive all WS28xx based LED strips, supporting both RGB (WS2812B) and RGBW
 Due to the redundant data lines, I recommend the 5V based WS-2813 or the 12V based WS-2815 for longer lengths (over 1.5m).
 For 12V strips you have to change the capacitor on the driver board for a 16V model. (A replacement schematics+PCB suitable for both will be added soon).
 
-**Important:** Configure your LED strip type in the firmware by uncommenting the appropriate define:
-- `#define USE_RGB_LEDS` for WS2812B (3 bytes per LED)
-- `#define USE_RGBW_LEDS` for WS2813B-RGBW, SK6812 (4 bytes per LED)
+**As of v1.12**, RGB and RGBW are both supported by the same firmware build -- no need to recompile for your strip type. Switch live over serial with the `Cm:` command:
+- `Cm:RGB` for WS2812B (3 bytes per LED)
+- `Cm:RGBW` for WS2813B-RGBW, SK6812 (4 bytes per LED) -- extracts the shared gray component into the white channel to save current, instead of driving R+G+B for white-ish colors
+
+Send `S` afterward to persist the choice across reboots.
 
 ![LEdStrip models](images/ledstrip-models.png?raw=true "LedStrip models")
 
@@ -43,8 +45,7 @@ And then install support for this board:
  - Raspberry Pi Pico / RP2040
 
 Please make sure to install the libraries for:
- - FastLED
- - FastLED_RGBW (for RGBW strip support)
+ - FastLED (3.10.5+ recommended; RGBW support is now handled natively by FastLED itself, see below)
  - LittleFS
  - Crypto
  - Ticker
@@ -97,45 +98,48 @@ The startup sequence output will look as follows:
 ```
 -=[ Shelf Indicators for Guided Handling Tasks ]=-
 
-SIGHT Version  : 1.9.1
+SIGHT Version  : 1.12
 MicroController : WAVESHARE_RP2040_ZERO
 MCU-Serial      : E6632C85931E832C
 
 Initializing...
 
 LittleFS mounted successfully.
-Configuration loaded successfully.
-Initialization done..,
+Checksum matches, configuration loaded.
 
-Identifier           : SIGHT v1.9.1
+Initialization done..,
+System ready - Status LED: Green glow
+Identifier           : SIGHT v1.12
 LEDs per channel     : 57
 Groups per channel   : 6
 Amount of channels   : 8
 Spacer width         : 1
 Start Offset         : 1
-Blinking interval    : 200
+Blinking interval    : 333
 Update interval      : 25
 Animate interval     : 150
 Animation fading     : 48
 2-step fade (in/out) : 50 / 50
 Channel order        : 12345678
-LED Mode             : RGB-only (W channel = 0)
-Startup animation    : True
-Local echo           : Enabled
+LED Mode             : RGB
+CPU LED color order  : RGB
 Overall brightness   : 255
+Local echo           : Enabled
 
 Channel              : |  1 |  2 |  3 |  4 |  5 |  6 |  7 |  8 |
-GPIO-PIN             : | 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09
+GPIO-PIN             : | 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09 |
 
-Color state 1        : 008000 (RRGGBB) Pattern: 0
-Color state 2        : FF8C00 (RRGGBB) Pattern: 0
-Color state 3        : FF0000 (RRGGBB) Pattern: 0
-Color state 4        : 0000FF (RRGGBB) Pattern: 0
-Color state 5        : 008000 (RRGGBB) Pattern: 1
-Color state 6        : FF8C00 (RRGGBB) Pattern: 1
-Color state 7        : FF0000 (RRGGBB) Pattern: 1
-Color state 8        : 0000FF (RRGGBB) Pattern: 1
-Color state 9        : FFFFFF (RRGGBB) Pattern: 10
+Color state          : RRGGBB    Pattern:
+            0        : 000000       0 (fixed)
+            1        : 008000       0
+            2        : FF8C00       0
+            3        : FF0000       0
+            4        : 0000FF       0
+            5        : 008000       1
+            6        : FF8C00       1
+            7        : FF0000       1
+            8        : 0000FF       1
+            9        : FFFFFF      10
 
 Enter 'H' for help
 
@@ -186,9 +190,10 @@ Cf:a:i:o      - Configure fading animation + two-step fade-in/out percentages (0
 Cc:s:RRGGBB   - Set color for state s (hex)
 Cp:s:pattern  - Set pattern for state s (1-9, pattern 0-12)
 Cz:order      - Set channel order (N=12345678 or custom sequence)
-C4:yes/no     - Toggle RGBW mode
-Cx:ch:pin     - Set GPIO pin per channel
+Cm:RGB/RGBW   - Set LED strip mode (applies live, no reboot; RGBW saves current on near-white colors)
+Cx:ch:pin     - Set GPIO pin per channel (reboot required to fully take effect)
 Ce:Y/N        - Enable/disable local echo (character echo while typing)
+Cq:RGB/GRB    - Set CPU status LED color order (onboard chip variance between boards)
 Cd            - Reset to default configuration
 ```
 
@@ -241,6 +246,29 @@ The hardcoded animations are:
 ```
 
 All settings for name, timing, colors and patterns can be saved to flash, and will automatically be loaded upon boot.
+
+## Version 1.12 Features
+
+- **RGB and RGBW are now one firmware build** -- no more recompiling to switch strip types. Change live over serial with `Cm:RGB`/`Cm:RGBW` (no reboot), then `S` to persist
+- **RGBW now saves current on near-white colors** -- the white channel absorbs the shared gray component of a color instead of always being off while R/G/B drive the full color
+- **`Cl` (LEDs per channel) applies live now** -- no reboot needed, same as changing colors or patterns. `Cx` (GPIO pin) still needs a reboot -- that one's a real hardware limitation, not a missing feature
+- **New `Cq:RGB`/`Cq:GRB` command** to correct the CPU status LED's onboard-chip color order per-board (some boards' onboard chips are wired differently) without a recompile
+- Removed the long-documented-but-never-implemented `C4:` command; help text now matches the actual command set
+
+## Version 1.11 Features
+
+- **Configuration persistence rewritten** to a stable, explicit format for saving/loading/backup-restore, independent of compiler/platform details -- more robust against future firmware updates
+- **`Cl`/`Cx` now ask before rebooting**: "Save configuration and reboot now to apply this change? (Y/N)" instead of silently requiring you to remember to reboot yourself
+- CPU status LED timing and RGBW wire color order hardware-verified with a purpose-built logic analyzer tool (see `tools/` folder)
+- Fixed a CPU status LED color glitch and documented that the onboard status LED chip's color order can vary board-to-board (separate from your main LED strips)
+
+## Version 1.10 Features
+
+- Fixed a bug where group numbers above 255 could be silently corrupted
+- Added comprehensive configuration validation (on defaults, flash load, backup-restore import, and every runtime change), with automatic safe correction of any bad values
+- Fixed a startup-animation timing issue that could trip the watchdog on large LED counts, and ensured brightness is applied before the very first frame
+- LittleFS no longer auto-formats on a mount failure; configuration saves are now crash-safe (atomic write)
+- Saved configuration files now include a version identifier so an incompatible file from an older/different firmware build is detected instead of being misread
 
 ## Version 1.9.1 Features
 
@@ -300,7 +328,7 @@ Version 1.8 included significant improvements:
 - **Problem**: No LEDs light up when sending commands
 - **Solutions**: 
   - Check GPIO pin configuration with `D` command
-  - Verify LED strip type (RGB vs RGBW) in firmware
+  - Verify LED strip mode matches your strip with `D` (`Cm:RGB`/`Cm:RGBW` to change, no reboot needed)
   - Ensure power supply is adequate (5V/12V depending on strip type)
   - Check data line connections and polarity
 
