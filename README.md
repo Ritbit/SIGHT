@@ -83,7 +83,7 @@ Get your SIGHT controller running in just 4 simple steps:
 
 **Example First Session:**
 
-```
+```text
 > H              # Show help
 > T1:1           # Set group 1 to green (state 1)
 > T2:2           # Set group 2 to orange (state 2) 
@@ -97,7 +97,7 @@ Upon connection, the controller performs a startup sequence while the CPU status
 
 The startup sequence output will look as follows:
 
-```
+```text
 -=[ Shelf Indicators for Guided Handling Tasks ]=-
 
 SIGHT Version  : 1.12
@@ -154,7 +154,7 @@ After the initialization, a command prompt (>) will appear, indicating that the 
 
 ### System Commands
 
-```
+```text
 V             - Show version information
 H or ?        - Show help
 D             - Display current configuration
@@ -169,7 +169,7 @@ W             - Shows welcome/startup loop
 
 ### Group Control Commands
 
-```
+```text
 Tnn:s         - Set group nn to state s (0-9)
 M:ssssss      - Set multiple groups at once by providing a list of states (e.g. M:12345)
 A:s           - Set all groups to state s (0-9)
@@ -179,7 +179,7 @@ X             - Clear all groups (set to state 0)
 
 ### Configuration Commands (C prefix)
 
-```
+```text
 Cn:name       - Set controller name/identifier (max 16 chars)
 Cl:n          - Set LEDs per channel (6-600)
 Ct:n          - Set groups per channel (1-100)
@@ -242,7 +242,7 @@ There are 10 different statuses that can be used, but status 0 is hardcoded to '
 
 The hardcoded animations are:
 
-```
+```text
  0.  Solid on                     [########]
  1.  Blinking                     [########]   [        ]
  2.  Blinking inverted            [        ]   [########]
@@ -336,7 +336,7 @@ Version 1.8 included significant improvements:
 
 ### Common Issues and Solutions
 
-**LED Strips Not Working**
+#### LED Strips Not Working
 
 - **Problem**: No LEDs light up when sending commands
 - **Solutions**:
@@ -345,7 +345,7 @@ Version 1.8 included significant improvements:
   - Ensure power supply is adequate (5V/12V depending on strip type)
   - Check data line connections and polarity
 
-**Configuration Not Saving**
+#### Configuration Not Saving
 
 - **Problem**: Settings lost after power cycle
 - **Solutions**:
@@ -354,7 +354,7 @@ Version 1.8 included significant improvements:
   - Try `S` command to manually save configuration
   - Use `Se` to export backup before making changes
 
-**LED Strips Flickering or Random Colors**
+#### LED Strips Flickering or Random Colors
 
 - **Problem**: LEDs show incorrect colors or flicker
 - **Solutions**:
@@ -363,7 +363,7 @@ Version 1.8 included significant improvements:
   - Add capacitor (1000µF) near strip power input
   - Check for electromagnetic interference
 
-**Serial Communication Issues**
+#### Serial Communication Issues
 
 - **Problem**: No response to commands
 - **Solutions**:
@@ -372,7 +372,7 @@ Version 1.8 included significant improvements:
   - Ensure line endings set to "Newline" in serial monitor
   - Try `R` command to reboot controller
 
-**Memory or Performance Issues**
+#### Memory or Performance Issues
 
 - **Problem**: Slow response or crashes
 - **Solutions**:
@@ -383,13 +383,13 @@ Version 1.8 included significant improvements:
 
 ### Error Messages Reference
 
-| Error Message | Cause | Solution |
-|---------------|-------|----------|
-| `Command 'X' unknown` | Invalid command | Use `H` for valid commands |
-| `Invalid state` | State not 0-9 | Use states 0-9 only |
-| `Group ID out of range` | Invalid group number | Use groups 1-MAX_GROUPS |
-| `GPIO pin already used` | Duplicate pin assignment | Choose unused GPIO pin |
-| `Configuration load failed` | Corrupted config | Use `Cd` to reset defaults |
+| Error Message               | Cause                    | Solution                   |
+|-----------------------------|--------------------------|----------------------------|
+| `Command 'X' unknown`       | Invalid command          | Use `H` for valid commands |
+| `Invalid state`             | State not 0-9            | Use states 0-9 only        |
+| `Group ID out of range`     | Invalid group number     | Use groups 1-MAX_GROUPS    |
+| `GPIO pin already used`     | Duplicate pin assignment | Choose unused GPIO pin     |
+| `Configuration load failed` | Corrupted config         | Use `Cd` to reset defaults |
 
 ### Getting Help
 
@@ -407,7 +407,7 @@ If you encounter issues not covered here:
 
 **Setup**: 4 zones, 8 groups each, 57 LEDs per group
 
-```
+```text
 Cs:8                    # 8 channels/zones
 Ct:8                    # 8 groups per zone
 Cl:57                   # 57 LEDs per group
@@ -416,7 +416,7 @@ Cw:1                    # 1 LED spacer between groups
 
 **Command Sequence**:
 
-```
+```text
 > T1:1                  # Zone 1 - Item ready (green)
 > T2:2                  # Zone 2 - In progress (orange)
 > T3:3                  # Zone 3 - Priority (red)
@@ -428,7 +428,7 @@ Cw:1                    # 1 LED spacer between groups
 
 **Setup**: 6 stations, progress indicators
 
-```
+```text
 Cs:6                    # 6 stations
 Ct:4                    # 4 groups per station
 Cl:30                   # 30 LEDs per group
@@ -437,7 +437,7 @@ Cp:2:10                 # Set state 2 to chase pattern
 
 **Command Sequence**:
 
-```
+```text
 > P01:1:025             # Station 1, state 1, 25% complete
 > P02:1:050             # Station 2, state 1, 50% complete
 > P03:1:075             # Station 3, state 1, 75% complete
@@ -448,7 +448,7 @@ Cp:2:10                 # Set state 2 to chase pattern
 
 **Setup**: 12 aisles, status lighting
 
-```
+```text
 Cs:8                    # 8 channels (multiple aisles per channel)
 Ct:12                   # 12 groups (aisles)
 Cl:20                   # 20 LEDs per aisle
@@ -459,7 +459,7 @@ Cc:3:FF0000             # Red for full
 
 **Command Sequence**:
 
-```
+```text
 > M:132131213121        # Set aisle status pattern
 > I                     # System info and group status
 ```
@@ -468,7 +468,7 @@ Cc:3:FF0000             # Red for full
 
 **Setup**: 5 process stages with animations
 
-```
+```text
 Cs:5                    # 5 stages
 Ct:6                    # 6 indicators per stage
 Cl:25                   # 25 LEDs per indicator
@@ -480,7 +480,7 @@ Cb:500                  # 500ms blink interval
 
 **Command Sequence**:
 
-```
+```text
 > A:0                   # Clear all stages
 > T1:1                  # Start stage 1
 > T2:2                  # Start stage 2
@@ -492,7 +492,7 @@ Cb:500                  # 500ms blink interval
 
 **Setup**: Visual performance indicators
 
-```
+```text
 Cs:8                    # 8 KPI categories
 Ct:4                    # 4 performance levels per KPI
 Cl:40                   # 40 LEDs for visual impact
@@ -502,7 +502,7 @@ Ca:200                 # 200ms animation speed
 
 **Color Mapping**:
 
-```
+```text
 > Cc:1:00FF00           # Excellent - Green
 > Cc:2:FFFF00           # Good - Yellow
 > Cc:3:FFA500           # Warning - Orange
@@ -511,7 +511,7 @@ Ca:200                 # 200ms animation speed
 
 **Real-time Updates**:
 
-```
+```text
 > T1:1                  # KPI 1: Excellent
 > T2:2                  # KPI 2: Good
 > T3:3                  # KPI 3: Warning
@@ -522,14 +522,14 @@ Ca:200                 # 200ms animation speed
 
 **Export Current Setup**:
 
-```
+```text
 > Se                    # Export configuration as hex
 OUTPUT: 53494748542D434... (copy this string)
 ```
 
 **Import Saved Setup**:
 
-```
+```text
 > Li:CONFIG:53494748542D434...  # Paste the hex string
 Configuration imported successfully
 > S                     # Save to flash
